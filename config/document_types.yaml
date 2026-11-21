@@ -1,0 +1,156 @@
+# Klasy dokumentów Odwołania2JSON (UZP / HackNation 2026).
+# NOWĄ klasę dokumentu dodaje się TYLKO tutaj — bez zmiany kodu źródłowego:
+# dopisz wpis z keywords (do klasyfikacji), schema (klucze wyjściowego JSON-a)
+# oraz prompt_hint (podpowiedź dla LLM-a). Aplikacja wczytuje ten plik przy starcie.
+version: 1
+classify_min_score: 4
+classes:
+  odwolanie:
+    label: "Odwołanie do KIO"
+    weighted_keywords:
+      - ["zarzut nr", 5]
+      - ["odwołujący:", 4]
+      - ["zamawiający:", 3]
+      - ["prezes krajowej izby odwoławczej", 4]
+      - ["krajowa izba odwoławcza", 3]
+      - ["krajowej izby odwoławczej", 3]
+      - ["wnoszę odwołanie", 4]
+      - ["odwołanie", 2]
+    keywords:
+      - "ODWOŁANIE"
+      - "Prezes Krajowej Izby Odwoławczej"
+      - "Odwołujący:"
+      - "Zarzut nr"
+    schema_file: "oczekiwane-json/odwolanie.json"
+    fields:
+      - "OdwolanieKIO.data"
+      - "OdwolanieKIO.czynnosc_dzien"
+      - "OdwolanieKIO.czynnosc_powod_id"
+      - "OdwolanieKIO.czynnosc_opis"
+      - "OdwolanieKIO.miejscowosc"
+      - "Odwolujacy[].krs"
+      - "Odwolujacy[].nazwa"
+      - "Odwolujacy[].nip"
+      - "Odwolujacy[].regon"
+      - "Odwolujacy[].przez-pelnomocnika"
+      - "Odwolujacy[].pelnomocnik.imie_nazwisko"
+      - "Odwolujacy[].pelnomocnik.nazwa"
+      - "Odwolujacy[].pelnomocnik.mail"
+      - "Zamawiajacy[].krs"
+      - "Zamawiajacy[].nazwa"
+      - "Zamawiajacy[].nip"
+      - "Zamawiajacy[].regon"
+      - "Zamawiajacy[].prowadzacy_postepowanie"
+      - "ZamowieniePubliczne.numer_bzp"
+      - "ZamowieniePubliczne.numer_postepowania"
+      - "ZamowieniePubliczne.numer_ted"
+      - "ZamowieniePubliczne.tytul"
+    prompt_hint: "Dokument to odwołanie do Krajowej Izby Odwoławczej. Wyciągnij strony postępowania, dane zamówienia i zaskarżoną czynność."
+
+  pelnomocnictwo:
+    label: "Pełnomocnictwo"
+    weighted_keywords:
+      - ["pełnomocnictwo", 5]
+      - ["mocodawc", 4]
+      - ["ustanawiam pełnomocnikiem", 4]
+      - ["udzielam pełnomocnictwa", 4]
+      - ["pełnomocnik jest umocowany", 4]
+      - ["do reprezentowania", 2]
+      - ["pełnomocnik", 2]
+    keywords:
+      - "PEŁNOMOCNICTWO"
+      - "Mocodawca"
+      - "Pełnomocnik jest umocowany"
+      - "udzielam pełnomocnictwa"
+    schema_file: "oczekiwane-json/pelnomocnictwo.json"
+    fields:
+      - "mocodawca[].data.imie_nazwisko"
+      - "mocodawca[].data.krs"
+      - "mocodawca[].data.nazwa"
+      - "mocodawca[].data.nip"
+      - "mocodawca[].data.typ"
+      - "mocodawca[].podpisujacy[].imie_nazwisko"
+      - "pelnomocnicy[].imie_nazwisko"
+      - "pelnomocnicy[].pesel"
+    prompt_hint: "Dokument to pełnomocnictwo. Wyciągnij mocodawcę, osoby podpisujące i pełnomocników."
+
+  przelew:
+    label: "Potwierdzenie przelewu"
+    weighted_keywords:
+      - ["potwierdzenie wykonania przelewu", 5]
+      - ["potwierdzenie realizacji polecenia przelewu", 5]
+      - ["potwierdzenie realizacji przelewu", 5]
+      - ["polecenie przelewu", 5]
+      - ["potwierdzenie przelewu", 5]
+      - ["dowód wykonania przelewu", 5]
+      - ["potwierdzenie operacji bankowej", 5]
+      - ["potwierdzenie transakcji", 5]
+      - ["kwota przelewu", 3]
+      - ["rachunek odbiorcy", 3]
+      - ["rachunek zleceniodawcy", 3]
+      - ["rachunek nadawcy", 3]
+      - ["rachunek obciążany", 3]
+      - ["rachunek beneficjenta", 3]
+      - ["tytuł przelewu", 3]
+      - ["data operacji", 2]
+      - ["kwota operacji", 2]
+      - ["dane nadawcy", 2]
+      - ["dane odbiorcy", 2]
+      - ["zleceniodawca", 2]
+      - ["beneficjent", 2]
+    keywords:
+      - "POLECENIE PRZELEWU"
+      - "POTWIERDZENIE WYKONANIA PRZELEWU"
+      - "Potwierdzenie realizacji polecenia przelewu"
+      - "Potwierdzenie przelewu"
+      - "Dowód wykonania przelewu"
+      - "Potwierdzenie operacji bankowej"
+      - "Potwierdzenie transakcji"
+      - "Rachunek obciążany"
+      - "Rachunek zleceniodawcy"
+      - "Rachunek odbiorcy"
+      - "Zleceniodawca"
+      - "Tytuł przelewu"
+      - "Data operacji"
+      - "Kwota operacji"
+    schema_file: "oczekiwane-json/przelew.json"
+    fields:
+      - "przelew_bankowy.data_operacji"
+      - "przelew_bankowy.kwota"
+      - "przelew_bankowy.na_rachunek"
+      - "przelew_bankowy.numer_transakcji"
+      - "przelew_bankowy.tytul"
+      - "przelew_bankowy.z_rachunku"
+    prompt_hint: "Dokument to potwierdzenie przelewu bankowego. Wyciągnij datę, kwotę, rachunki, numer transakcji i tytuł."
+
+# Mapa powodu odwołania — TYLKO z pierwszego zarzutu (Zarzut nr 1).
+# Zgodna ze słownikiem UZP (hacknation-uzp-repo/oczekiwane-json/czynnosc_powod_id_dict.md).
+czynnosc_powod:
+  1: "Decyzja o odrzuceniu oferty"
+  2: "Ogłoszenie wyboru oferty"
+  3: "Decyzja o wykluczeniu wykonawcy"
+  4: "Publikacja specyfikacji warunków zamówienia (SWZ)"
+  5: "Modyfikacja treści SWZ"
+  6: "Odpowiedzi i wyjaśnienia do SWZ"
+  7: "Zaniechanie odrzucenia oferty"
+  8: "Zaniechanie wykluczenia wykonawcy"
+  9: "Decyzja o unieważnieniu postępowania"
+  10: "Zaniechanie unieważnienia postępowania"
+  11: "Opis przedmiotu zamówienia (OPZ)"
+  12: "Projektowane postanowienia umowy"
+
+# Słowa kluczowe w zdaniu o zaskarżonej czynności -> id powodu.
+# Kolejność ma znaczenie: najpierw warianty "zaniechanie", potem pozostałe.
+czynnosc_keywords:
+  - ["zaniechania unieważnienia", "zaniechanie unieważnienia", "zaniechaniu unieważnienia", 10]
+  - ["zaniechania odrzucenia", "zaniechanie odrzucenia", "zaniechaniu odrzucenia", 7]
+  - ["zaniechania wykluczenia", "zaniechanie wykluczenia", "zaniechaniu wykluczenia", 8]
+  - ["unieważnienia postępowania", "unieważnieniu postępowania", "unieważnił postępowanie", "unieważnienie postępowania", 9]
+  - ["odrzucenia oferty", "odrzuceniu oferty", "odrzucił ofertę", "odrzucenie oferty", 1]
+  - ["wykluczenia wykonawcy", "wykluczeniu wykonawcy", "wykluczył wykonawcę", "wykluczenie wykonawcy", 3]
+  - ["wyboru oferty", "wyborze oferty", "wybrał ofertę", "ogłoszenie wyboru oferty", "dokonał wyboru", 2]
+  - ["modyfikacji swz", "modyfikacja treści swz", "zmienił treść swz", "zmiana treści swz", 5]
+  - ["udzielił wyjaśnień", "udzielenie wyjaśnień", "odpowiedzi i wyjaśnienia", "wyjaśnienia do swz", "wyjaśnień do swz", 6]
+  - ["publikacji swz", "publikację swz", "publikacja swz", "publikacja specyfikacji", "specyfikacji warunków zamówienia", 4]
+  - ["opisu przedmiotu zamówienia", "opisie przedmiotu zamówienia", "opis przedmiotu zamówienia", 11]
+  - ["projektowane postanowienia umowy", "projektowanych postanowień umowy", "projektowane postanowienia", "postanowienia umowy", "postanowień umowy", "wzoru umowy", "wzór umowy", 12]

@@ -1,0 +1,11 @@
+services:
+  odwolania2json:
+    build: .
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_BASE=${LLM_API_BASE:-https://api.mistral.ai/v1}
+      - LLM_MODEL=${LLM_MODEL:-mistral-small-latest}
+    command: ["python", "app.py", "input", "output"]

@@ -1,0 +1,32 @@
+# Secrets & environment variables
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Data and output folders
+output/
+output_*/
+output_test/
+output_eval/
+input/
+input_*/
+
+# Upstream training repository
+hacknation-uzp-repo/
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
