@@ -136,6 +136,38 @@ classes:
       - "przelew_bankowy.z_rachunku"
     prompt_hint: "Dokument to potwierdzenie przelewu bankowego. Wyciągnij datę, kwotę, rachunki, numer transakcji i tytuł."
 
+  przystapienie:
+    label: "Zgłoszenie przystąpienia do postępowania odwoławczego"
+    weighted_keywords:
+      - ["zgłoszenie przystąpienia do postępowania odwoławczego", 6]
+      - ["przystąpienie do postępowania odwoławczego", 5]
+      - ["zgłoszenie przystąpienia", 5]
+      - ["zgłaszam przystąpienie", 5]
+      - ["zgłasza przystąpienie", 5]
+      - ["przystępujący:", 4]
+      - ["art. 524", 4]
+      - ["po stronie odwołującego", 3]
+      - ["po stronie zamawiającego", 3]
+      - ["przystąpienie", 2]
+    keywords:
+      - "ZGŁOSZENIE PRZYSTĄPIENIA"
+      - "PRZYSTĄPIENIE DO POSTĘPOWANIA ODWOŁAWCZEGO"
+      - "Przystępujący:"
+      - "art. 524 Pzp"
+      - "po stronie odwołującego"
+      - "po stronie zamawiającego"
+    schema_file: "config/schemas/przystapienie.json"
+    fields:
+      - "przystepujacy.nazwa"
+      - "przystepujacy.nip"
+      - "przystepujacy.krs"
+      - "przystepujacy.regon"
+      - "numer_postepowania"
+      - "strona"
+      - "data"
+      - "podpisujacy[].imie_nazwisko"
+    prompt_hint: "Dokument to oświadczenie o przystąpieniu do postępowania odwoławczego przed KIO (art. 524 Pzp). Wyciągnij dane przystępującego (nazwa, nip, krs, regon), numer_postepowania, strona ('po stronie odwołującego' lub 'po stronie zamawiającego'), data (YYYY-MM-DD), podpisujacy (lista imion i nazwisk)."
+
 # Mapa powodu odwołania — TYLKO z pierwszego zarzutu (Zarzut nr 1).
 # Zgodna ze słownikiem UZP (hacknation-uzp-repo/oczekiwane-json/czynnosc_powod_id_dict.md).
 czynnosc_powod:

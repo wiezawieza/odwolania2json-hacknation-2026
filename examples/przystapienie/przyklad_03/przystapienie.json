@@ -1,0 +1,19 @@
+{
+  "przystepujacy": {
+    "nazwa": "Novatech Systemy Sp. z o.o.",
+    "nip": "9512398741",
+    "krs": "0000654321",
+    "regon": "147852369"
+  },
+  "numer_postepowania": "BZP.271.88.2026",
+  "strona": "po stronie zamawiającego",
+  "data": "2026-06-02",
+  "podpisujacy": [
+    {
+      "imie_nazwisko": "Tomasz Adamski"
+    },
+    {
+      "imie_nazwisko": "Piotr Wróblewski"
+    }
+  ]
+}

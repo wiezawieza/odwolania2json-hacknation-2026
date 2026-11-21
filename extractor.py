@@ -44,7 +44,7 @@ def _text_via_fitz(pdf_path):
     except ImportError:
         import fitz as pymupdf
     doc = pymupdf.open(pdf_path)
-    pages = [page.get_text() for page in doc]
+    pages = [page.get_text().replace("\xa0", " ") for page in doc]
     return pages
 
 
@@ -1033,6 +1033,88 @@ EXTRACTORS = {
 }
 
 
+def extract_generic(text, config, doc_type, llm_fields=None):
+    """Generyczny ekstraktor dla nowych klas dokumentów dodanych w config/document_types.yaml."""
+    llm_fields = llm_fields or {}
+    cls = config.get("classes", {}).get(doc_type, {})
+    fields = cls.get("fields", [])
+    flat_all = _flat(text)
+
+    # 1. Data dokumentu
+    date, _ = _header_date_place(text)
+    if not date:
+        date = _parse_pl_date(text[:1500])
+
+    # 2. Identyfikatory i podmioty
+    party_label = "Przystępujący:" if "przystepujacy" in " ".join(fields) else None
+    party_block = ""
+    if party_label:
+        party_block = _party_block(text, party_label, next_labels=("Zamawiający", "Odwołujący", "ZGŁOSZENIE", "Dotyczy", "Wnoszę", "Działając"))
+    if not party_block:
+        party_block = text[:3000]
+
+    # Sprawdzenie konsorcjum
+    m_kons = re.search(r"1\)\s*(?:Lider\s+Konsorcjum\s*:?\s*)?(?:\n\s*)?([^\n,\(]+)", party_block, re.IGNORECASE)
+    if m_kons and "konsorcjum" in party_block.lower():
+        entity_name = m_kons.group(1).strip()
+    else:
+        entity_name = _first_name_line(party_block)
+    krs, nip, regon = _ids_from_block(party_block)
+
+    # 3. Numer postępowania
+    m_nr = re.search(
+        r"(?:n[rt]\.?\s+referencyjny(?:\s+sprawy)?|numer\s+postępowania|znak\s+sprawy|postępowani[au]\s+nr)[:\s\.]+([A-Za-z0-9][A-Za-z0-9\./\-\s]{1,35}?)(?=\.\s|\n|\.$|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if m_nr:
+        nr_raw = m_nr.group(1).strip().rstrip(".,; ")
+        nr_post = re.sub(r"\s*/\s*", "/", nr_raw)
+        nr_post = re.sub(r"\s+", "", nr_post)
+    else:
+        nr_post = None
+
+    # 4. Strona postępowania (dla przystąpienia)
+    strona = None
+    if re.search(r"po\s+stronie\s+odwołujące", text, re.IGNORECASE):
+        strona = "po stronie odwołującego"
+    elif re.search(r"po\s+stronie\s+zamawiające", text, re.IGNORECASE):
+        strona = "po stronie zamawiającego"
+
+    # 5. Podpisujący
+    podpisujacy = parse_signers_block(text)
+    if not podpisujacy:
+        m_sig = re.search(r"(?:Podpis|Za\s+[A-ZĄĆĘŁŃÓŚŹŻa-ząćęłńóśźż]+|W\s+imieniu)[:\s\n]*\s*([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)", text)
+        if m_sig:
+            norm_name = normalize_person_name(m_sig.group(1), text)
+            if norm_name:
+                podpisujacy = [{"imie_nazwisko": norm_name}]
+
+    # Zwrócenie struktury zgodnej z typem przystapienie
+    if doc_type == "przystapienie":
+        return {
+            "przystepujacy": {
+                "nazwa": entity_name or llm_fields.get("nazwa"),
+                "nip": nip or llm_fields.get("nip"),
+                "krs": krs or llm_fields.get("krs"),
+                "regon": regon or llm_fields.get("regon"),
+            },
+            "numer_postepowania": nr_post or llm_fields.get("numer_postepowania"),
+            "strona": strona or llm_fields.get("strona"),
+            "data": date or llm_fields.get("data"),
+            "podpisujacy": podpisujacy or llm_fields.get("podpisujacy", []),
+        }
+
+    out = {}
+    for f in fields:
+        parts = f.split(".")
+        cur = out
+        for p in parts[:-1]:
+            cur = cur.setdefault(p.replace("[]", ""), {})
+        cur[parts[-1]] = llm_fields.get(parts[-1])
+    return out
+
+
 def extract_document(pdf_path, config, use_llm=True):
     """Pełny pipeline dla jednego PDF-a. Zwraca (wynik_json, typ, info)."""
     from llm import extract_fields_llm
@@ -1042,16 +1124,30 @@ def extract_document(pdf_path, config, use_llm=True):
     if doc_type == "nieznany":
         return {}, "nieznany", {**info, "error": "Nie udało się znaleźć typu dokumentu"}
 
+    extractor = EXTRACTORS.get(doc_type, lambda txt, cfg, llm: extract_generic(txt, cfg, doc_type, llm))
+
     llm_fields = {}
     if use_llm:
-        # LLM tylko gdy regex/heurystyka czegoś nie dała — sprawdzamy po 1. przebiegu.
-        draft = EXTRACTORS[doc_type](text, config, {})
+        draft = extractor(text, config, {})
         needs = []
         if doc_type == "odwolanie":
-            if draft["OdwolanieKIO"]["czynnosc_powod_id"] is None:
+            if draft.get("OdwolanieKIO", {}).get("czynnosc_powod_id") is None:
                 needs.append("czynnosc_powod_id")
-            if not draft["ZamowieniePubliczne"]["tytul"]:
+            if not draft.get("ZamowieniePubliczne", {}).get("tytul"):
                 needs.append("tytul")
+        elif doc_type not in ("pelnomocnictwo", "przelew"):
+            prompt_hint = config.get("classes", {}).get(doc_type, {}).get("prompt_hint")
+            if prompt_hint:
+                # Jeśli któreś pole jest puste, zapytaj LLM
+                is_any_none = False
+                for v in draft.values():
+                    if isinstance(v, dict):
+                        if any(val is None for val in v.values()):
+                            is_any_none = True
+                    elif v is None:
+                        is_any_none = True
+                if is_any_none:
+                    llm_fields = extract_fields_llm(text, prompt_hint) or {}
         if needs:
             prompt = (
                 "Wyciągnij z tekstu TYLKO te pola i zwróć je jako JSON: "
@@ -1062,5 +1158,5 @@ def extract_document(pdf_path, config, use_llm=True):
                 "Daty w formacie YYYY-MM-DD. Brak danej = null."
             )
             llm_fields = extract_fields_llm(text, prompt) or {}
-    result = EXTRACTORS[doc_type](text, config, llm_fields)
+    result = extractor(text, config, llm_fields)
     return result, doc_type, info

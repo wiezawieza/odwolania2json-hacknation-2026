@@ -97,8 +97,9 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000`. Umożliwia przeci
 1. **Warstwa ekstrakcji tekstu i OCR:**
    - Podstawowa ekstrakcja za pomocą biblioteki PyMuPDF (`fitz`).
    - Automatyczna detekcja skanów: jeśli strona zawiera poniżej 200 znaków, uruchamiany jest Tesseract OCR (`pol`). W przypadku braku Tesseracta zwracane są bezpieczne wartości `null`.
-2. **Czterostanowy klasyfikator dokumentów:**
-   - Klasyfikacja bazuje na ważonych sygnałach słownikowych z `config/document_types.yaml`: `odwolanie`, `pelnomocnictwo`, `przelew`, `nieznany`.
+2. **Klasyfikator i elastyczność dodawania typów (Config-Only Extensibility):**
+   - Klasyfikacja bazuje na ważonych sygnałach słownikowych z `config/document_types.yaml`: `odwolanie`, `pelnomocnictwo`, `przelew`, `przystapienie`, `nieznany`.
+   - **Nowe typy dokumentów dodaje się bez ingerencji w kod źródłowy:** wystarczy definicja w `config/document_types.yaml` (wagi, słowa kluczowe, deklaracja pól) oraz schemat JSON Schema w `config/schemas/`. System automatycznie klasyfikuje i ekstrahuje dane nowego typu (zweryfikowane na 4. typie: zgłoszenie przystąpienia do postępowania odwoławczego, art. 524 Pzp – wynik **F1 = 1,0000** na wariantach w `examples/przystapienie/`).
    - **Obsługa dokumentów obcych (`nieznany`):** jeśli dokument nie należy do żadnej ze wspieranych kategorii spraw KIO, generowany jest **pusty JSON `{}`** o nazwie pliku wejściowego. Nie powoduje to przerwania procesu przetwarzania wsadowego.
 3. **Ekstrakcja deterministyczna (Zero Hallucination):**
    - Pola jednoznaczne wyciągane są w 100% deterministycznie z walidacją formatu:
@@ -129,7 +130,10 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000`. Umożliwia przeci
 ├── llm.py                      # Klient LLM (Mistral API UE -> regex fallback)
 ├── evaluate.py                 # Oficjalny skrypt ewaluacji F1 wg wytycznych UZP
 ├── config/
-│   └── document_types.yaml     # Konfiguracja klas dokumentów i słowników
+│   ├── document_types.yaml     # Konfiguracja klas dokumentów i słowników
+│   └── schemas/                # Schematy JSON dla klas dokumentów
+├── examples/
+│   └── przystapienie/          # Syntetyczne przykłady PDF + JSON dla typu przystapienie
 ├── static/
 │   └── index.html              # Interfejs graficzny web GUI
 ├── EVAL.md                     # Raport z wynikami ewaluacji F1

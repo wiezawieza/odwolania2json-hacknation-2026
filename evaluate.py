@@ -101,6 +101,8 @@ def _doc_type(path, data=None):
         return "pelnomocnictwo"
     if "przelew" in p or "potwierdzen" in p:
         return "przelew"
+    if "przystap" in p:
+        return "przystapienie"
     if data:
         if "OdwolanieKIO" in data:
             return "odwolanie"
@@ -108,6 +110,8 @@ def _doc_type(path, data=None):
             return "pelnomocnictwo"
         if "przelew_bankowy" in data:
             return "przelew"
+        if "przystepujacy" in data:
+            return "przystapienie"
     return "inny"
 
 

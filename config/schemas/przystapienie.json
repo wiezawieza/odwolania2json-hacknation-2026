@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Zgłoszenie przystąpienia do postępowania odwoławczego",
+  "description": "Schemat JSON dla oświadczenia o przystąpieniu do postępowania odwoławczego przed KIO (art. 524 Pzp)",
+  "type": "object",
+  "required": [
+    "przystepujacy",
+    "numer_postepowania",
+    "strona",
+    "data",
+    "podpisujacy"
+  ],
+  "properties": {
+    "przystepujacy": {
+      "type": "object",
+      "required": ["nazwa", "nip", "krs", "regon"],
+      "properties": {
+        "nazwa": {
+          "type": ["string", "null"],
+          "description": "Pełna nazwa przystępującego (lub lidera konsorcjum)"
+        },
+        "nip": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{10}$",
+          "description": "10-cyfrowy NIP przystępującego bez kresek i spacji"
+        },
+        "krs": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{10}$",
+          "description": "10-cyfrowy numer KRS z dopełnieniem zerami"
+        },
+        "regon": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{9,14}$",
+          "description": "9- lub 14-cyfrowy numer REGON"
+        }
+      }
+    },
+    "numer_postepowania": {
+      "type": ["string", "null"],
+      "description": "Numer referencyjny lub znak postępowania o udzielenie zamówienia"
+    },
+    "strona": {
+      "type": ["string", "null"],
+      "enum": ["po stronie odwołującego", "po stronie zamawiającego", null],
+      "description": "Strona, po której wykonawca przystępuje do postępowania"
+    },
+    "data": {
+      "type": ["string", "null"],
+      "format": "date",
+      "description": "Data sporządzenia pisma w formacie ISO (YYYY-MM-DD)"
+    },
+    "podpisujacy": {
+      "type": "array",
+      "description": "Lista osób podpisujących zgłoszenie przystąpienia (w mianowniku)",
+      "items": {
+        "type": "object",
+        "required": ["imie_nazwisko"],
+        "properties": {
+          "imie_nazwisko": {
+            "type": ["string", "null"],
+            "description": "Imię i nazwisko w mianowniku (casus nominativus)"
+          }
+        }
+      }
+    }
+  }
+}
