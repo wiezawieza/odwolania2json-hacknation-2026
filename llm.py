@@ -2,7 +2,7 @@
 
 Kolejność providerów w runtime:
   1. Open-source model po API z dostawcą z UE (Mistral AI,
-     https://api.mistral.ai/v1 — model open-weights, np. mistral-small-latest).
+     https://api.mistral.ai/v1 — model open-weights Ministral 3 3B, przypięty ministral-3b-2512).
      Klucz: LLM_API_KEY lub MISTRAL_API_KEY. Endpoint: LLM_API_BASE.
      Dostawca posiada Politykę Prywatności obejmującą zakres i miejsce przetwarzania
      danych na terenie UE/EOG (zgodnie z wymogami UZP).
@@ -12,6 +12,7 @@ Kolejność providerów w runtime:
 ZERO modeli komercyjnych zamkniętych (Gemini, Claude) oraz brak hostingu prywatnego.
 """
 
+import contextlib
 import json
 import os
 import urllib.request
@@ -33,7 +34,29 @@ def _load_dotenv():
 _load_dotenv()
 
 DEFAULT_API_BASE = "https://api.mistral.ai/v1"
-DEFAULT_MODEL = "mistral-small-latest"
+# Model PRZYPIĘTY do wersji: Ministral 3 3B Instruct 2512 (3,4B LM + 0,4B vision = 3,8B razem,
+# Apache 2.0, open weights: mistralai/Ministral-3-3B-Instruct-2512) — kategoria ≤8B
+# wg tabeli UZP. NIE używać aliasów "-latest" ani ministral-8b-* (8B-2512 ma ~8,8B,
+# a ministral-8b-2410 jest wycofany z API i podmieniany po cichu na 8B-2512).
+DEFAULT_MODEL = "ministral-3b-2512"
+
+_DISABLED = 0
+_NAME_CACHE = {}
+
+
+@contextlib.contextmanager
+def llm_disabled():
+    """Blok bez żadnego wywołania LLM-a (np. wynik czysto deterministyczny do porównania w GUI)."""
+    global _DISABLED
+    _DISABLED += 1
+    try:
+        yield
+    finally:
+        _DISABLED -= 1
+
+
+def _llm_off():
+    return _DISABLED > 0 or os.environ.get("LLM_OFF") == "1"
 
 
 def _post_json(url, payload, headers, timeout=60):
@@ -81,7 +104,7 @@ def extract_fields_llm(text, prompt):
     Pola deterministyczne (NIP, KRS, REGON, daty ISO, kwoty, rachunki, numery)
     wyciąga regex i mają bezwzględne pierwszeństwo przed wynikiem LLM-a.
     """
-    if os.environ.get("LLM_OFF") == "1":
+    if _llm_off():
         return None
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("MISTRAL_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", DEFAULT_API_BASE)
@@ -107,14 +130,18 @@ def extract_fields_llm(text, prompt):
 
 
 def normalize_name_nominative_llm(name):
-    """Sprowadza imię i nazwisko do mianownika (casus nominativus) przez Mistral API."""
-    if os.environ.get("LLM_OFF") == "1":
+    """Sprowadza imię i nazwisko do mianownika (casus nominativus) przez Mistral API.
+    Udane wyniki są cache'owane — ta sama osoba nie generuje kilku wywołań API."""
+    if _llm_off():
         return None
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("MISTRAL_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", DEFAULT_API_BASE)
     model = os.environ.get("LLM_MODEL", DEFAULT_MODEL)
     if not api_key or not name:
         return None
+    key = " ".join(name.split())
+    if key in _NAME_CACHE:
+        return _NAME_CACHE[key]
     payload = {
         "model": model,
         "messages": [
@@ -146,7 +173,8 @@ def normalize_name_nominative_llm(name):
             return None
         parts = res.split()
         if len(parts) >= 2:
-            return " ".join(parts)
+            _NAME_CACHE[key] = " ".join(parts)
+            return _NAME_CACHE[key]
         return None
     except Exception as exc:  # noqa: BLE001
         print(f"[llm] Błąd normalizacji nazwiska ({name}): {exc}")

@@ -1,7 +1,9 @@
 # Klasy dokumentów Odwołania2JSON (UZP / HackNation 2026).
 # NOWĄ klasę dokumentu dodaje się TYLKO tutaj — bez zmiany kodu źródłowego:
-# dopisz wpis z keywords (do klasyfikacji), schema (klucze wyjściowego JSON-a)
-# oraz prompt_hint (podpowiedź dla LLM-a). Aplikacja wczytuje ten plik przy starcie.
+#   weighted_keywords / keywords / negative_keywords — klasyfikacja po treści,
+#   extract — struktura wynikowego JSON-a i reguła dla każdego pola (wzór: przystapienie),
+#   prompt_hint — kontekst dla LLM-a (tylko dla pól z llm: true, puste po regułach).
+# Aplikacja wczytuje ten plik przy starcie.
 version: 1
 classify_min_score: 4
 classes:
@@ -21,6 +23,16 @@ classes:
       - "Prezes Krajowej Izby Odwoławczej"
       - "Odwołujący:"
       - "Zarzut nr"
+    # Orzeczenia KIO (wyroki, postanowienia) używają słownictwa odwołań i przystąpień,
+    # ale są dokumentami obcymi -> pusty JSON {}. Każde trafienie ODEJMUJE wagę.
+    # Lista wspólna dla wszystkich klas (kotwica YAML &orzeczenie_kio).
+    negative_keywords: &orzeczenie_kio
+      - ["orzeka:", 6]
+      - ["postanawia:", 6]
+      - ["po rozpoznaniu na posiedzeniu", 4]
+      - ["po rozpoznaniu na rozprawie", 4]
+      - ["przewodniczący:", 3]
+      - ["protokolant:", 3]
     schema_file: "oczekiwane-json/odwolanie.json"
     fields:
       - "OdwolanieKIO.data"
@@ -62,6 +74,7 @@ classes:
       - "Mocodawca"
       - "Pełnomocnik jest umocowany"
       - "udzielam pełnomocnictwa"
+    negative_keywords: *orzeczenie_kio
     schema_file: "oczekiwane-json/pelnomocnictwo.json"
     fields:
       - "mocodawca[].data.imie_nazwisko"
@@ -126,6 +139,7 @@ classes:
       - "Tytuł przelewu"
       - "Data operacji"
       - "Kwota operacji"
+    negative_keywords: *orzeczenie_kio
     schema_file: "oczekiwane-json/przelew.json"
     fields:
       - "przelew_bankowy.data_operacji"
@@ -156,17 +170,42 @@ classes:
       - "art. 524 Pzp"
       - "po stronie odwołującego"
       - "po stronie zamawiającego"
+    negative_keywords: *orzeczenie_kio
     schema_file: "config/schemas/przystapienie.json"
-    fields:
-      - "przystepujacy.nazwa"
-      - "przystepujacy.nip"
-      - "przystepujacy.krs"
-      - "przystepujacy.regon"
-      - "numer_postepowania"
-      - "strona"
-      - "data"
-      - "podpisujacy[].imie_nazwisko"
-    prompt_hint: "Dokument to oświadczenie o przystąpieniu do postępowania odwoławczego przed KIO (art. 524 Pzp). Wyciągnij dane przystępującego (nazwa, nip, krs, regon), numer_postepowania, strona ('po stronie odwołującego' lub 'po stronie zamawiającego'), data (YYYY-MM-DD), podpisujacy (lista imion i nazwisk)."
+    prompt_hint: "Dokument to zgłoszenie przystąpienia do postępowania odwoławczego przed KIO (art. 524 Pzp)."
+    # Blok strony postępowania: od etykiety do pierwszej z etykiet `until`.
+    party: &przystepujacy
+      label: ["Przystępujący:", "Wykonawca przystępujący:", "Przystępujący wykonawca:"]
+      until: ["Zamawiający", "Odwołujący", "ZGŁOSZENIE", "Dotyczy", "Wnoszę", "Działając"]
+    # Ekstrakcja deklaratywna: struktura wynikowego JSON-a = zagnieżdżenie kluczy,
+    # liść = reguła (budulce silnika w extractor.py, wspólne dla każdej nowej klasy):
+    #   header_date | header_place | party_name | party_id (id: nip/krs/regon/pesel) |
+    #   numer_postepowania (labels) | regex (pattern, group, normalize) |
+    #   choice (options: [wartość, wzorzec]) | signers | const (value)
+    # llm: true -> pole puste po regułach może uzupełnić LLM; wartość przyjmujemy tylko
+    #             po walidacji formatu i gdy występuje w tekście dokumentu.
+    extract:
+      przystepujacy:
+        nazwa: {rule: party_name, <<: *przystepujacy, llm: true}
+        nip: {rule: party_id, id: nip, <<: *przystepujacy, llm: true}
+        krs: {rule: party_id, id: krs, <<: *przystepujacy, llm: true}
+        regon: {rule: party_id, id: regon, <<: *przystepujacy, llm: true}
+      numer_postepowania:
+        rule: numer_postepowania
+        labels:
+          - 'n(?:ume)?r\.?\s+referencyjny(?:\s+(?:sprawy|postępowania))?(?:\s+nr)?'
+          - 'n(?:ume)?r\.?\s+postępowania'
+          - 'znak\s+sprawy'
+          - 'postępowani[au]\s+nr'
+        llm: true
+      strona:
+        rule: choice
+        options:
+          - ["po stronie odwołującego", 'po\s+stronie\s+odwołujące']
+          - ["po stronie zamawiającego", 'po\s+stronie\s+zamawiające']
+        llm: true
+      data: {rule: header_date, llm: true}
+      podpisujacy: {rule: signers, llm: true}
 
 # Mapa powodu odwołania — TYLKO z pierwszego zarzutu (Zarzut nr 1).
 # Zgodna ze słownikiem UZP (hacknation-uzp-repo/oczekiwane-json/czynnosc_powod_id_dict.md).

@@ -27,8 +27,11 @@ Szczegółowy raport znajduje się w pliku [EVAL.md](EVAL.md):
 - **Odwołanie (70 dokumentów):** F1 = **1,0000** (TP=1391, TN=169, FP=0, FN=0)
 - **Pełnomocnictwo (70 dokumentów):** F1 = **1,0000** (TP=536, TN=188, FP=0, FN=0)
 - **Przelew bankowy (70 dokumentów):** F1 = **1,0000** (TP=414, TN=6, FP=0, FN=0)
+- **Dokumenty negatywne (16 PDF-ów bez ground truth, w tym postanowienie KIO):** 16/16 → pusty JSON `{}` (raportowane osobno przez `evaluate.py`).
 
-> **Zasada UZP (15:55) — Mianownik (casus nominativus):** Wszystkie pola `imie_nazwisko` (pełnomocnicy, mocodawca, podpisujący) są normalizowane do formy mianownikowej. Priorytet ma mianownik z dokumentu (pieczęć, blok podpisu pod kropkami `.....`, formuła przyjęcia pełnomocnictwa, lista radców). Formy odmienione podlegają normalizacji przez LLM (Mistral API z UE) z walidacją regułową; brak możliwości sprowadzenia do mianownika skutkuje zwróceniem `null` (bezwzględny zakaz kopiowania form deklinacyjnych).
+> Wynik jest w pełni deterministyczny: na zbiorze treningowym LLM nie jest wywoływany ani razu (reguły wypełniają wszystkie pola; sprawdzone uruchomieniem z niedostępnym endpointem API).
+
+> **Zasada UZP (15:55) — Mianownik (casus nominativus):** Wszystkie pola `imie_nazwisko` (pełnomocnicy, mocodawca, podpisujący) są normalizowane do formy mianownikowej. Priorytet ma mianownik z dokumentu (pieczęć, blok podpisu pod kropkami `.....`, formuła przyjęcia pełnomocnictwa, lista radców). Formy odmienione podlegają normalizacji przez LLM (Ministral 3 3B, Mistral API z UE) z walidacją regułową; brak możliwości sprowadzenia do mianownika skutkuje zwróceniem `null` (bezwzględny zakaz kopiowania form deklinacyjnych).
 
 > **Brak overfittingu:** Rozwiązanie przeszło test odporności na zmodyfikowanych, syntetycznych danych (zmienione nazwy podmiotów, przesunięte daty, nowe numery spraw, BZP i TED), zachowując wynik **F1 = 1,0000**. W kodzie nie ma żadnych zahardkodowanych wartości ze zbioru treningowego.
 
@@ -67,6 +70,7 @@ cp .env.example .env
 Zawartość `.env`:
 ```env
 LLM_API_KEY=twoj_klucz_mistral
+# LLM_MODEL=ministral-3b-2512   # domyślny, przypięty model (≤8B); nie używać aliasów -latest
 ```
 *Aplikacja działa w pełni autonomicznie również bez podanego klucza (fallback na reguły deterministyczne).*
 
@@ -78,7 +82,7 @@ Aplikacja przetwarza katalog wejściowy `input` i zapisuje pliki JSON o analogic
 python app.py input output
 ```
 
-Tryb bez LLM (czysty regex + heurystyka):
+Tryb bez LLM (czysty regex + heurystyka, zero wywołań API — także bez normalizacji nazwisk przez LLM):
 ```bash
 python app.py input output --no-llm
 ```
@@ -88,7 +92,9 @@ python app.py input output --no-llm
 ```bash
 python app.py --serve --port 8000
 ```
-Interfejs dostępny jest pod adresem: `http://localhost:8000`. Umożliwia przeciągnięcie pliku PDF, podgląd dokumentu oraz wygenerowanego JSON-a.
+Interfejs dostępny jest pod adresem: `http://localhost:8000` (bez zewnętrznych zależności, działa na Pythonie 3.13+):
+- **Dokument** — podgląd PDF obok wyniku. Każde pole JSON-a ma **pochodzenie**: metodę (`regex` / `heurystyka` / `LLM` / `null — brak danych` / `spójność sprawy`), numer strony (klik przenosi podgląd PDF na tę stronę) i fragment tekstu źródłowego z podświetloną wartością. Metoda „LLM” to fakt, nie deklaracja: pole różni się od wyniku tego samego dokumentu przetworzonego z wyłączonym LLM-em. Metadane pochodzenia **nie trafiają do JSON-a** — „Pobierz JSON” zwraca wyłącznie model UZP.
+- **Sprawa** — kilka PDF-ów jednej sprawy (typ rozpoznawany po treści) → jeden scalony podgląd (odwołujący, zamawiający, numer postępowania, kwota wpisu — przy każdej wartości dokument źródłowy) oraz kontrole spójności z wynikiem **OK / UWAGA**: NIP odwołującego vs mocodawcy, kwota przelewu vs wpis od odwołania (rozróżnia przelew tytułem wpisu od opłaty skarbowej od pełnomocnictwa), numer postępowania w tytule przelewu, pełnomocnik z odwołania na liście pełnomocników. Te same kontrole wypisuje tryb wsadowy CLI.
 
 ---
 
@@ -98,9 +104,10 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000`. Umożliwia przeci
    - Podstawowa ekstrakcja za pomocą biblioteki PyMuPDF (`fitz`).
    - Automatyczna detekcja skanów: jeśli strona zawiera poniżej 200 znaków, uruchamiany jest Tesseract OCR (`pol`). W przypadku braku Tesseracta zwracane są bezpieczne wartości `null`.
 2. **Klasyfikator i elastyczność dodawania typów (Config-Only Extensibility):**
-   - Klasyfikacja bazuje na ważonych sygnałach słownikowych z `config/document_types.yaml`: `odwolanie`, `pelnomocnictwo`, `przelew`, `przystapienie`, `nieznany`.
-   - **Nowe typy dokumentów dodaje się bez ingerencji w kod źródłowy:** wystarczy definicja w `config/document_types.yaml` (wagi, słowa kluczowe, deklaracja pól) oraz schemat JSON Schema w `config/schemas/`. System automatycznie klasyfikuje i ekstrahuje dane nowego typu (zweryfikowane na 4. typie: zgłoszenie przystąpienia do postępowania odwoławczego, art. 524 Pzp – wynik **F1 = 1,0000** na wariantach w `examples/przystapienie/`).
-   - **Obsługa dokumentów obcych (`nieznany`):** jeśli dokument nie należy do żadnej ze wspieranych kategorii spraw KIO, generowany jest **pusty JSON `{}`** o nazwie pliku wejściowego. Nie powoduje to przerwania procesu przetwarzania wsadowego.
+   - Klasyfikacja bazuje na ważonych sygnałach słownikowych z `config/document_types.yaml`: `odwolanie`, `pelnomocnictwo`, `przelew`, `przystapienie`, `nieznany`. Sygnały negatywne (`negative_keywords`, np. „orzeka:”, „po rozpoznaniu na posiedzeniu”) odejmują punkty — orzeczenia KIO, które używają słownictwa odwołań, trafiają do `nieznany`.
+   - **Nowe typy dokumentów dodaje się bez ingerencji w kod źródłowy.** Trzy klasy bazowe mają dedykowane ekstraktory; każda nowa klasa jest ekstrahowana wyłącznie według sekcji `extract` w YAML: zagnieżdżenie kluczy = struktura wynikowego JSON-a, każdy liść = reguła z gotowych budulców silnika (`header_date`, `header_place`, `party_name`, `party_id`, `numer_postepowania`, `regex`, `choice`, `signers`, `const`). Flaga `llm: true` pozwala LLM-owi uzupełnić pole puste po regułach — wartość jest przyjmowana tylko po walidacji formatu i gdy występuje w tekście dokumentu. Klasa z samą listą `fields` (bez reguł) działa w trybie „tylko LLM” z tą samą walidacją.
+   - Zweryfikowane na 4. typie — zgłoszenie przystąpienia do postępowania odwoławczego (art. 524 Pzp): w kodzie nie ma żadnej linii specyficznej dla tego typu, całość to sekcja `przystapienie` w YAML; **F1 = 1,0000** na przykładach w `examples/przystapienie/`.
+   - **Obsługa dokumentów obcych (`nieznany`):** jeśli dokument nie należy do żadnej ze wspieranych kategorii spraw KIO, generowany jest **pusty JSON `{}`** o nazwie pliku wejściowego (także w trybie pojedynczego pliku i przy błędzie odczytu PDF-a). Nie powoduje to przerwania procesu przetwarzania wsadowego.
 3. **Ekstrakcja deterministyczna (Zero Hallucination):**
    - Pola jednoznaczne wyciągane są w 100% deterministycznie z walidacją formatu:
      - Numery identyfikacyjne: NIP (10 cyfr), KRS (10 cyfr), REGON (9 lub 14 cyfr).
@@ -108,14 +115,15 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000`. Umożliwia przeci
      - Identyfikatory postępowań: numery referencyjne spraw, ogłoszenia BZP i TED (kanoniczny format `XXXXXX-YYYY`).
      - Kwoty i daty transakcji (eliminacja mylenia daty operacji z datą generowania wyciągu).
      - Konsorcja i reprezentacja: prawidłowe rozdzielanie członków konsorcjum (Lider vs Partner) oraz podpisujących.
-4. **Hierarchia silników LLM (wyłącznie Open Source / dostawca z UE):**
-   - Zgodnie z wytycznymi UZP hosting prywatny/lokalny jest wykluczony. W runtime **nie są używane** modele komercyjne/zamknięte (brak Gemini, Claude).
-   - Kolejność providerów w runtime:
-     1. **Primary:** Open-source model po API z dostawcą z UE (**Mistral AI**, model open-weights `mistral-small-latest`). Serwery zlokalizowane na terenie UE/EOG, dostawca posiadający Politykę Prywatności określającą zakres i miejsce przetwarzania danych.
-     2. **Fallback:** Pełny tryb deterministyczny (regex + heurystyka). Gwarantuje niezawodność, odporność na limity API i brak opóźnień sieciowych.
-   - LLM jest wywoływany **wyłącznie jako fallback do pól niejednoznacznych** (np. `czynnosc_powod_id` 1–12 z pierwszego zarzutu, tytuł zamówienia), gdy reguły deterministyczne napotkają brak danych.
+4. **Model LLM (wyłącznie Open Source / dostawca z UE):**
+   - **Jeden model: Ministral 3 3B Instruct (`ministral-3b-2512`)** — open weights na licencji Apache 2.0 (`mistralai/Ministral-3-3B-Instruct-2512`), **3,4 mld parametrów** modelu językowego + **0,4 mld** enkodera obrazu = **3,8 mld parametrów razem** (wg karty modelu na Hugging Face) → kategoria **≤ 8B (20 pkt wg tabeli UZP)**. Model jest przypięty do wersji (`llm.py`, `.env.example`, `docker-compose.yml`); aliasy `*-latest` nie są używane. Wcześniej rozważany `ministral-8b-2410` (8,02 mld) jest wycofany z API Mistral (zapytanie jest po cichu kierowane na `ministral-8b-2512`, ok. 8,8 mld), dlatego z niego zrezygnowano.
+   - Dostawca: **Mistral AI** (API z UE; Polityka Prywatności określa zakres i miejsce przetwarzania danych na terenie UE/EOG). Zgodnie z wytycznymi UZP hosting prywatny/lokalny jest wykluczony, a modele komercyjne/zamknięte (Gemini, Claude) **nie są używane** w runtime.
+   - **Silnik główny jest deterministyczny** (regex + heurystyka + konfiguracja YAML): na 210 dokumentach treningowych oraz na przykładach `przystapienie` wykonano **0 wywołań LLM** (zmierzone licznikiem wywołań API przy włączonym LLM i obecnym kluczu), a F1 = 1,0000.
+   - Kolejność w runtime: 1) reguły deterministyczne; 2) **LLM tylko jako fallback dla pól niejednoznacznych** (poniżej); 3) brak klucza / błąd API → `null` bez zgadywania.
+   - LLM jest wywoływany **wyłącznie jako fallback do pól niejednoznacznych** (np. `czynnosc_powod_id` 1–12 z pierwszego zarzutu, tytuł zamówienia), gdy reguły deterministyczne napotkają brak danych. Odpowiedź jest walidowana: id spoza słownika 1–12, puste napisy i „null” → `null`; tytuł przyjmowany tylko, gdy jego słowa występują w dokumencie.
 5. **Moduł spójności sprawy (`case_consistency.py`):**
-   - Zgodnie z zasadą *„Zrozum sprawę. Nie tylko dokument.”* po przetworzeniu kompletu dokumentów sprawy następuje walidacja i uzupełnianie braków krzyżowych (np. weryfikacja NIP odwołującego vs mocodawcy, numeru postępowania w tytule przelewu).
+   - Zgodnie z zasadą *„Zrozum sprawę. Nie tylko dokument.”* po przetworzeniu kompletu dokumentów sprawy następuje walidacja i uzupełnianie braków krzyżowych (np. weryfikacja NIP odwołującego vs mocodawcy, numeru postępowania w tytule przelewu), a kontrole OK / UWAGA (w tym kwota przelewu vs wpis od odwołania) są pokazywane w GUI i wypisywane w CLI.
+   - **Pochodzenie wartości (`provenance.py`)** — dla GUI: metoda, strona i fragment tekstu źródłowego każdego pola (na 210 dokumentach treningowych lokalizacja w tekście dla 99,8% niepustych pól; pozostałe to pola wyliczane, np. `przez-pelnomocnika = 0`, opisane notą).
 6. **Ścisła zgodność ze schematami UZP:**
    - Wygenerowany JSON jest ściśle dopasowany do schematów `odwolanie.json`, `pelnomocnictwo.json`, `przelew.json` (właściwe typy pól, brak cytowań w JSON, brak dodatkowych nieudokumentowanych kluczy).
 
@@ -127,7 +135,9 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000`. Umożliwia przeci
 ├── app.py                      # Punkt wejściowy CLI oraz serwer GUI
 ├── extractor.py                # Pipeline OCR, klasyfikator, parser dokumentów
 ├── case_consistency.py         # Walidacja i spójność między dokumentami sprawy
-├── llm.py                      # Klient LLM (Mistral API UE -> regex fallback)
+├── provenance.py               # Pochodzenie wartości dla GUI (metoda, strona, fragment)
+├── llm.py                      # Klient LLM (Ministral 3 3B przez Mistral API UE -> fallback deterministyczny)
+├── TECHNICAL.md                # Opis techniczny: architektura i model LLM
 ├── evaluate.py                 # Oficjalny skrypt ewaluacji F1 wg wytycznych UZP
 ├── config/
 │   ├── document_types.yaml     # Konfiguracja klas dokumentów i słowników

@@ -3,64 +3,347 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Odwołania2JSON — wgraj PDF, zobacz JSON</title>
+<title>Odwołania2JSON</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #111; }
-  header { background: #0b3d66; color: #fff; padding: 16px 24px; }
-  header h1 { margin: 0; font-size: 20px; }
-  header p { margin: 4px 0 0; opacity: .85; font-size: 14px; }
-  main { padding: 16px 24px; }
-  .row { display: flex; gap: 16px; flex-wrap: wrap; }
-  .col { flex: 1 1 420px; background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; min-height: 300px; }
-  .col h2 { margin-top: 0; font-size: 16px; }
-  pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; background: #f0f2f4; padding: 12px; border-radius: 6px; max-height: 70vh; overflow: auto; }
-  iframe { width: 100%; height: 70vh; border: 1px solid #ddd; border-radius: 6px; }
-  button { background: #0b3d66; color: #fff; border: 0; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-size: 15px; }
-  #status { margin: 8px 0; color: #555; }
+  :root {
+    --bg: #f4f6f9; --panel: #ffffff; --text: #14202b; --muted: #5b6875; --line: #dde3ea;
+    --brand: #0b3d66; --brand-ink: #ffffff; --code-bg: #f0f3f7; --mark: #ffe98a;
+    --m-regex: #1d5fbf; --m-regex-bg: #e3edfb;
+    --m-heurystyka: #6b3fb3; --m-heurystyka-bg: #efe7fb;
+    --m-llm: #8a5200; --m-llm-bg: #fdefd6;
+    --m-null: #5b6875; --m-null-bg: #eceff3;
+    --m-spojnosc: #0f766e; --m-spojnosc-bg: #dcf3ef;
+    --ok: #1b7a3a; --ok-bg: #e2f4e8; --warn: #8a5200; --warn-bg: #fdefd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1419; --panel: #161d24; --text: #e6ebf0; --muted: #9aa7b4; --line: #2a343e;
+      --brand: #0d4a7c; --code-bg: #0f151b; --mark: #6b5900;
+      --m-regex: #8ab4f8; --m-regex-bg: #1b2a40; --m-heurystyka: #c4a7f5; --m-heurystyka-bg: #2a2140;
+      --m-llm: #f3c26b; --m-llm-bg: #3a2c12; --m-null: #9aa7b4; --m-null-bg: #232c35;
+      --m-spojnosc: #6fd3c6; --m-spojnosc-bg: #12322e;
+      --ok: #7ad69a; --ok-bg: #143322; --warn: #f3c26b; --warn-bg: #3a2c12;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, "Segoe UI", sans-serif; margin: 0; background: var(--bg); color: var(--text); font-size: 15px; }
+  header { background: var(--brand); color: var(--brand-ink); padding: 14px 24px; }
+  header h1 { margin: 0; font-size: 19px; }
+  header p { margin: 4px 0 0; opacity: .85; font-size: 13.5px; }
+  nav { display: flex; gap: 4px; padding: 0 24px; background: var(--brand); }
+  nav button { background: transparent; color: var(--brand-ink); border: 0; padding: 10px 16px; font-size: 14.5px;
+               cursor: pointer; border-radius: 8px 8px 0 0; opacity: .8; }
+  nav button[aria-selected="true"] { background: var(--bg); color: var(--text); opacity: 1; font-weight: 600; }
+  main { padding: 16px 24px 32px; }
+  form.bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 6px; }
+  .btn { background: var(--brand); color: var(--brand-ink); border: 0; padding: 9px 15px; border-radius: 6px; cursor: pointer; font-size: 14.5px; }
+  .btn.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .status { margin: 6px 0 12px; color: var(--muted); min-height: 1.3em; }
+  .status.err { color: #c62828; }
+  .grid { display: grid; grid-template-columns: minmax(320px, 2fr) 3fr; gap: 16px; align-items: start; }
+  @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+  .panel h2 { margin: 0 0 10px; font-size: 15.5px; }
+  iframe.pdf { width: 100%; height: 78vh; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .subtabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
+  .subtabs button { background: transparent; border: 1px solid var(--line); color: var(--text); padding: 5px 11px;
+                    border-radius: 999px; cursor: pointer; font-size: 13.5px; }
+  .subtabs button[aria-selected="true"] { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+  .subtabs label { margin-left: auto; font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; background: var(--code-bg); padding: 12px;
+        border-radius: 6px; max-height: 72vh; overflow: auto; margin: 0; }
+  .tablewrap { max-height: 72vh; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+  table.prov { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.prov th { position: sticky; top: 0; background: var(--panel); text-align: left; padding: 7px 8px;
+                  border-bottom: 1px solid var(--line); font-weight: 600; font-size: 12.5px; color: var(--muted); z-index: 1; }
+  table.prov td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.path { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; width: 23%; }
+  td.valcell { width: 20%; word-break: break-word; }
+  td.page { width: 3.5em; text-align: center; }
+  td.frag { color: var(--muted); word-break: break-word; }
+  td.frag mark { background: var(--mark); color: var(--text); padding: 0 2px; border-radius: 3px; }
+  .note { font-size: 12px; margin-top: 3px; opacity: .85; }
+  .null { color: var(--muted); font-style: italic; }
+  .muted { color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .m-regex { color: var(--m-regex); background: var(--m-regex-bg); }
+  .m-heurystyka { color: var(--m-heurystyka); background: var(--m-heurystyka-bg); }
+  .m-llm { color: var(--m-llm); background: var(--m-llm-bg); }
+  .m-null { color: var(--m-null); background: var(--m-null-bg); }
+  .m-spojnosc { color: var(--m-spojnosc); background: var(--m-spojnosc-bg); }
+  .pagebtn { background: transparent; border: 1px solid var(--line); color: var(--text); border-radius: 5px;
+             padding: 1px 7px; cursor: pointer; font-size: 12.5px; }
+  .pagebtn:hover { border-color: var(--brand); }
+  .counts { margin: 0 0 8px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .legend { margin-top: 10px; font-size: 12.5px; color: var(--muted); line-height: 1.7; }
+  .legend .badge { margin-right: 4px; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+  .kv { border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px; }
+  .kv .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+  .kv .v { font-weight: 600; margin-top: 3px; word-break: break-word; }
+  .kv .sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; font-family: ui-monospace, Consolas, monospace; }
+  .kv .src { font-size: 12px; color: var(--muted); margin-top: 5px; }
+  ul.checks { list-style: none; margin: 0; padding: 0; }
+  ul.checks li { display: grid; grid-template-columns: 76px 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  ul.checks li:last-child { border-bottom: 0; }
+  .st { display: inline-block; text-align: center; font-weight: 700; font-size: 12.5px; padding: 3px 0; border-radius: 6px; }
+  .st.OK { color: var(--ok); background: var(--ok-bg); }
+  .st.UWAGA { color: var(--warn); background: var(--warn-bg); }
+  .chk-name { font-weight: 600; }
+  .chk-src { font-size: 12px; color: var(--muted); margin-top: 2px; font-family: ui-monospace, Consolas, monospace; }
+  .doclist { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .doclist button { text-align: left; background: transparent; border: 1px solid var(--line); color: var(--text);
+                    border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+  .doclist button[aria-selected="true"] { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
+  .doclist small { display: block; color: var(--muted); }
+  .stack { display: grid; gap: 16px; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <header>
   <h1>Odwołania2JSON — UZP / HackNation 2026</h1>
-  <p>Wgraj PDF (odwołanie, pełnomocnictwo albo potwierdzenie przelewu) — po lewej zobaczysz dokument, po prawej wygenerowany JSON.</p>
+  <p>PDF sprawy odwoławczej KIO → JSON zgodny z modelem UZP. Każde pole ma pochodzenie: metoda, strona i fragment tekstu źródłowego.</p>
 </header>
+<nav role="tablist">
+  <button role="tab" id="tabDoc" aria-selected="true" aria-controls="viewDoc">Dokument</button>
+  <button role="tab" id="tabCase" aria-selected="false" aria-controls="viewCase">Sprawa (komplet dokumentów)</button>
+</nav>
 <main>
-  <form id="f">
-    <input type="file" id="file" accept=".pdf" required>
-    <button type="submit">Uruchom analizę</button>
-    <button type="button" id="dl" disabled>Pobierz JSON</button>
-  </form>
-  <p id="status"></p>
-  <div class="row">
-    <div class="col"><h2>Dokument źródłowy (PDF)</h2><iframe id="pdf" title="PDF"></iframe></div>
-    <div class="col"><h2>Wynik (JSON)</h2><pre id="out">Wybierz plik PDF i kliknij „Uruchom analizę”.</pre></div>
-  </div>
+  <!-- ======================= DOKUMENT ======================= -->
+  <section id="viewDoc" role="tabpanel" aria-labelledby="tabDoc">
+    <form class="bar" id="docForm">
+      <input type="file" id="docFile" accept=".pdf,application/pdf" required aria-label="Plik PDF">
+      <button class="btn" type="submit">Uruchom analizę</button>
+      <button class="btn secondary" type="button" id="docDl" disabled>Pobierz JSON</button>
+    </form>
+    <p class="status" id="docStatus" aria-live="polite">Wybierz plik PDF (odwołanie, pełnomocnictwo, potwierdzenie przelewu, przystąpienie) i kliknij „Uruchom analizę”.</p>
+    <div class="grid">
+      <div class="panel"><h2>Dokument źródłowy (PDF)</h2><iframe class="pdf" id="docPdf" title="Podgląd PDF"></iframe></div>
+      <div class="panel">
+        <div class="subtabs" role="tablist">
+          <button type="button" data-sub="prov" aria-selected="true">Pola i pochodzenie</button>
+          <button type="button" data-sub="json" aria-selected="false">JSON</button>
+          <label><input type="checkbox" id="docHideNull"> ukryj puste (null)</label>
+        </div>
+        <div id="docProv"><p class="muted">Tu pojawi się każde pole JSON-a z metodą ekstrakcji, numerem strony i fragmentem tekstu, z którego pochodzi.</p></div>
+        <pre id="docJson" hidden></pre>
+        <div class="legend" id="legend"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= SPRAWA ======================= -->
+  <section id="viewCase" role="tabpanel" aria-labelledby="tabCase" hidden>
+    <form class="bar" id="caseForm">
+      <input type="file" id="caseFiles" accept=".pdf,application/pdf" multiple required aria-label="Pliki PDF jednej sprawy">
+      <button class="btn" type="submit">Analizuj sprawę</button>
+    </form>
+    <p class="status" id="caseStatus" aria-live="polite">Zaznacz wszystkie PDF-y jednej sprawy (np. odwołanie, pełnomocnictwo, potwierdzenie przelewu). Typ każdego pliku rozpoznajemy po treści, nie po nazwie.</p>
+    <div class="stack" id="caseOut" hidden>
+      <div class="panel"><h2>Sprawa — scalony podgląd</h2><div class="summary" id="caseSummary"></div></div>
+      <div class="panel"><h2>Kontrole spójności</h2><ul class="checks" id="caseChecks"></ul></div>
+      <div class="grid">
+        <div class="panel"><h2 id="casePdfTitle">Dokument (PDF)</h2><iframe class="pdf" id="casePdf" title="Podgląd PDF dokumentu sprawy"></iframe></div>
+        <div class="panel">
+          <h2>Dokumenty sprawy</h2>
+          <div class="doclist" id="caseDocs"></div>
+          <div class="subtabs" role="tablist">
+            <button type="button" data-csub="prov" aria-selected="true">Pola i pochodzenie</button>
+            <button type="button" data-csub="json" aria-selected="false">JSON</button>
+            <button type="button" class="btn secondary" id="caseDl" style="border-radius:999px;padding:5px 11px">Pobierz JSON</button>
+            <label><input type="checkbox" id="caseHideNull"> ukryj puste (null)</label>
+          </div>
+          <div id="caseProv"></div>
+          <pre id="caseJson" hidden></pre>
+        </div>
+      </div>
+    </div>
+  </section>
 </main>
 <script>
-let lastJson = null;
-document.getElementById('f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const file = document.getElementById('file').files[0];
-  if (!file) return;
-  document.getElementById('pdf').src = URL.createObjectURL(file);
-  document.getElementById('status').textContent = 'Analizuję…';
+"use strict";
+const $ = (s) => document.querySelector(s);
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids) if (kid != null) n.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return n;
+}
+const METHODS = [
+  ["regex", "regex", "wzorzec z walidacją formatu (NIP, KRS, daty, kwoty, numery, IBAN)"],
+  ["heurystyka", "heurystyka", "reguła na etykietach i układzie dokumentu (nazwy, tytuły, czynność, podpisy)"],
+  ["llm", "LLM", "uzupełnione przez Mistral (UE) — tylko gdy reguły nie dały wyniku, po walidacji z tekstem"],
+  ["spojnosc", "spójność sprawy", "uzupełnione z innego dokumentu tej samej sprawy"],
+  ["null", "null — brak danych", "wartości nie ma w dokumencie — zwracamy null, nie zgadujemy"],
+];
+const METHOD_LABEL = Object.fromEntries(METHODS.map(([k, l]) => [k, l]));
+const badge = (m, text, title) => el("span", { class: "badge m-" + m, title: title || null }, text);
+
+$("#legend").append(
+  ...METHODS.map(([k, l, d]) => el("div", {}, badge(k, l), d)),
+  el("div", {}, "Metadane pochodzenia służą tylko do podglądu — nie są częścią JSON-a (plik JSON zawiera wyłącznie dane z modelu UZP).")
+);
+
+function setStatus(id, text, err) { const s = $(id); s.textContent = text; s.classList.toggle("err", !!err); }
+function showPdf(frame, url, page) {
+  frame.src = "about:blank";
+  setTimeout(() => { frame.src = url + (page ? "#page=" + page : ""); }, 40);
+}
+function fmtValue(v) {
+  if (v === null || v === undefined) return el("span", { class: "null" }, "null");
+  if (Array.isArray(v)) return el("span", { class: "null" }, "[]");
+  return el("span", {}, typeof v === "string" ? v : JSON.stringify(v));
+}
+function download(obj, pdfName) {
+  const name = (pdfName || "wynik").replace(/\.pdf$/i, "") + ".json";
+  const a = el("a", { href: URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" })), download: name });
+  document.body.append(a); a.click(); a.remove();
+}
+function renderProv(box, rows, hideNull, onPage) {
+  box.replaceChildren();
+  if (!rows.length) { box.append(el("p", { class: "muted" }, "Dokument obcy — wynik to pusty JSON {} (brak pól).")); return; }
+  const counts = {};
+  rows.forEach((r) => { counts[r.method] = (counts[r.method] || 0) + 1; });
+  const sum = el("p", { class: "counts" }, `${rows.length} pól:`);
+  METHODS.forEach(([k, l]) => { if (counts[k]) sum.append(badge(k, `${l}: ${counts[k]}`)); });
+  box.append(sum);
+  const tbody = el("tbody");
+  rows.forEach((r) => {
+    if (hideNull && r.method === "null") return;
+    const frag = el("td", { class: "frag" });
+    if (r.fragment) frag.append(r.fragment.before, el("mark", {}, r.fragment.match), r.fragment.after);
+    else frag.append(el("span", { class: "muted" }, "—"));
+    if (r.note) frag.append(el("div", { class: "note" }, r.note));
+    const page = el("td", { class: "page" }, r.page
+      ? el("button", { class: "pagebtn", type: "button", title: "Pokaż stronę " + r.page + " w podglądzie PDF", onclick: () => onPage(r.page) }, r.page)
+      : el("span", { class: "muted" }, "—"));
+    tbody.append(el("tr", {},
+      el("td", { class: "path" }, r.path),
+      el("td", { class: "valcell" }, fmtValue(r.value)),
+      el("td", {}, badge(r.method, r.method_label || METHOD_LABEL[r.method], r.note)),
+      page, frag));
+  });
+  box.append(el("div", { class: "tablewrap" }, el("table", { class: "prov" },
+    el("thead", {}, el("tr", {}, el("th", {}, "Pole (ścieżka w JSON)"), el("th", {}, "Wartość"), el("th", {}, "Metoda"),
+      el("th", {}, "Str."), el("th", {}, "Fragment tekstu źródłowego"))), tbody)));
+}
+function bindSubtabs(attr, provBox, jsonBox) {
+  document.querySelectorAll(`[data-${attr}]`).forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll(`[data-${attr}]`).forEach((x) => x.setAttribute("aria-selected", String(x === b)));
+    const json = b.dataset[attr] === "json";
+    provBox.hidden = json; jsonBox.hidden = !json;
+  }));
+}
+async function postFiles(url, files, field) {
   const fd = new FormData();
-  fd.append('file', file);
-  const r = await fetch('/api/extract', { method: 'POST', body: fd });
-  const data = await r.json();
-  if (data.error) { document.getElementById('status').textContent = 'Błąd: ' + data.error; return; }
-  lastJson = data.result;
-  document.getElementById('out').textContent = JSON.stringify(data.result, null, 2);
-  document.getElementById('status').textContent = 'Typ dokumentu: ' + data.type + (data.info && data.info.ocr ? ' (użyto OCR)' : '');
-  document.getElementById('dl').disabled = false;
+  files.forEach((f) => fd.append(field, f, f.name));
+  const r = await fetch(url, { method: "POST", body: fd });
+  let data;
+  try { data = await r.json(); } catch (_) { throw new Error("serwer zwrócił niepoprawną odpowiedź (" + r.status + ")"); }
+  if (!r.ok || data.error) throw new Error(data.error || r.statusText);
+  return data;
+}
+function describe(d) {
+  const info = d.info || {};
+  return `${d.label}${d.type !== "nieznany" ? " (" + d.type + ")" : ""} · stron: ${info.pages ?? "?"}${info.ocr ? " · OCR (Tesseract)" : ""}${info.needs_ocr ? " · skan bez OCR — pola null" : ""}`;
+}
+
+/* --------------------------- zakładki główne --------------------------- */
+[["#tabDoc", "#viewDoc"], ["#tabCase", "#viewCase"]].forEach(([t, v], _i, all) => {
+  $(t).addEventListener("click", () => all.forEach(([t2, v2]) => {
+    $(t2).setAttribute("aria-selected", String(t2 === t)); $(v2).hidden = v2 !== v;
+  }));
 });
-document.getElementById('dl').addEventListener('click', () => {
-  if (!lastJson) return;
-  const blob = new Blob([JSON.stringify(lastJson, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'wynik.json';
-  a.click();
+
+/* --------------------------- dokument --------------------------- */
+const doc = { data: null, url: null, name: null };
+bindSubtabs("sub", $("#docProv"), $("#docJson"));
+function renderDoc() {
+  renderProv($("#docProv"), doc.data.provenance, $("#docHideNull").checked, (p) => showPdf($("#docPdf"), doc.url, p));
+  $("#docJson").textContent = JSON.stringify(doc.data.result, null, 2);
+}
+$("#docHideNull").addEventListener("change", () => doc.data && renderDoc());
+$("#docForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const file = $("#docFile").files[0];
+  if (!file) return;
+  if (doc.url) URL.revokeObjectURL(doc.url);
+  doc.url = URL.createObjectURL(file); doc.name = file.name;
+  showPdf($("#docPdf"), doc.url);
+  $("#docDl").disabled = true;
+  setStatus("#docStatus", "Analizuję… (skan z OCR może potrwać kilka sekund)");
+  try {
+    doc.data = await postFiles("/api/extract", [file], "file");
+    setStatus("#docStatus", "Typ dokumentu: " + describe(doc.data));
+    renderDoc();
+    $("#docDl").disabled = false;
+  } catch (err) { setStatus("#docStatus", "Błąd: " + err.message, true); }
+});
+$("#docDl").addEventListener("click", () => doc.data && download(doc.data.result, doc.name));
+
+/* --------------------------- sprawa --------------------------- */
+const kase = { data: null, urls: [], sel: 0 };
+bindSubtabs("csub", $("#caseProv"), $("#caseJson"));
+function kv(label, value, sub, src) {
+  return el("div", { class: "kv" }, el("div", { class: "k" }, label),
+    el("div", { class: "v" }, value ?? el("span", { class: "null" }, "brak danych")),
+    sub ? el("div", { class: "sub" }, sub) : null,
+    src ? el("div", { class: "src" }, "źródło: " + src) : null);
+}
+function ids(o) { return ["nip", "krs", "regon"].filter((k) => o && o[k]).map((k) => k.toUpperCase() + " " + o[k]).join(" · ") || null; }
+function renderCaseDoc() {
+  const d = kase.data.documents[kase.sel];
+  document.querySelectorAll("#caseDocs button").forEach((b, i) => b.setAttribute("aria-selected", String(i === kase.sel)));
+  $("#casePdfTitle").textContent = "Dokument: " + d.filename;
+  showPdf($("#casePdf"), kase.urls[kase.sel]);
+  renderProv($("#caseProv"), d.provenance, $("#caseHideNull").checked, (p) => showPdf($("#casePdf"), kase.urls[kase.sel], p));
+  $("#caseJson").textContent = JSON.stringify(d.result, null, 2);
+}
+$("#caseHideNull").addEventListener("change", () => kase.data && renderCaseDoc());
+$("#caseDl").addEventListener("click", () => { if (kase.data) { const d = kase.data.documents[kase.sel]; download(d.result, d.filename); } });
+function renderCase() {
+  const { summary: s, checks, documents } = kase.data;
+  const box = $("#caseSummary");
+  box.replaceChildren(
+    kv("Odwołujący", s.odwolujacy && s.odwolujacy.nazwa, ids(s.odwolujacy), s.odwolujacy && s.odwolujacy.zrodlo),
+    ...(s.zamawiajacy.length ? s.zamawiajacy : [null]).map((z, i, arr) =>
+      kv(arr.length > 1 ? `Zamawiający ${i + 1}` : "Zamawiający", z && z.nazwa, z && z.nip ? "NIP " + z.nip : null, z && z.zrodlo)),
+    kv("Numer postępowania", s.numer_postepowania.wartosc, null, s.numer_postepowania.zrodlo),
+    kv("Kwota wpisu", s.kwota_wpisu.tekst,
+      s.przelew.tekst ? `przelew: ${s.przelew.tekst}${s.przelew.cel === "oplata_skarbowa" ? " — opłata skarbowa" : s.przelew.cel === "wpis" ? " — tytułem wpisu" : ""}` : "brak przelewu w sprawie",
+      s.kwota_wpisu.zrodlo),
+    ...(s.przystepujacy || []).filter(Boolean).map((p) => kv("Przystępujący", p.nazwa, ids(p), "zgłoszenie przystąpienia")),
+  );
+  $("#caseChecks").replaceChildren(...checks.map((c) => el("li", {},
+    el("span", { class: "st " + c.status }, c.status),
+    el("div", {}, el("div", { class: "chk-name" }, c.nazwa), el("div", {}, c.opis), el("div", { class: "chk-src" }, c.zrodla.join("  ·  "))))));
+  $("#caseDocs").replaceChildren(...documents.map((d, i) => el("button", { type: "button", onclick: () => { kase.sel = i; renderCaseDoc(); } },
+    d.filename, el("small", {}, d.label))));
+  kase.sel = Math.max(0, documents.findIndex((d) => d.type === "odwolanie"));
+  $("#caseOut").hidden = false;
+  renderCaseDoc();
+}
+$("#caseForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const files = [...$("#caseFiles").files];
+  if (!files.length) return;
+  kase.urls.forEach((u) => URL.revokeObjectURL(u));
+  kase.urls = files.map((f) => URL.createObjectURL(f));
+  setStatus("#caseStatus", `Analizuję ${files.length} dokument(y)… (skany z OCR mogą potrwać dłużej)`);
+  try {
+    kase.data = await postFiles("/api/case", files, "files");
+    const n = kase.data.checks.filter((c) => c.status === "UWAGA").length;
+    setStatus("#caseStatus", `Dokumentów: ${kase.data.documents.length} · ` + kase.data.documents.map((d) => d.type).join(", ")
+      + ` · kontrole: ${kase.data.checks.length - n} OK, ${n} UWAGA`);
+    renderCase();
+  } catch (err) { setStatus("#caseStatus", "Błąd: " + err.message, true); }
 });
 </script>
 </body>

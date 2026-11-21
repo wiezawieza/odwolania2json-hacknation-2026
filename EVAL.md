@@ -4,6 +4,10 @@ Dokumentów porównanych: 210, brak predykcji dla: 0
 TP=2341 TN=363 FP=0 FN=0
 **F1 łączny: 1.0000**
 
+## Dokumenty negatywne (oczekiwany pusty JSON {})
+- poprawnie puste: 16/16, FP z niepustych negatywów: 0
+- F1 łączny z negatywami: 1.0000
+
 ## F1 per typ dokumentu
 - odwolanie: F1=1.0000 (TP=1391 FP=0 FN=0 TN=169)
 - pelnomocnictwo: F1=1.0000 (TP=536 FP=0 FN=0 TN=188)

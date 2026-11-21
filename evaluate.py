@@ -166,6 +166,29 @@ def main():
             if res in ("FN", "FP", "FP+FN"):
                 worst[field] += 1
         n_docs += 1
+
+    # Dokumenty negatywne: PDF bez pliku ground truth -> oczekiwany pusty JSON {}.
+    # Każda niepusta wartość w predykcji dla negatywu to FP (wg definicji UZP).
+    neg_total, neg_ok, neg_fp, neg_bad = 0, 0, 0, []
+    for pdf in sorted(glob.glob(os.path.join(truth_dir, "**", "*.pdf"), recursive=True)):
+        stem = os.path.splitext(pdf)[0]
+        if os.path.isfile(stem + ".json"):
+            continue
+        if os.path.basename(stem) == "potwierdzenie_przelewu" and os.path.isfile(
+                os.path.join(os.path.dirname(pdf), "przelew.json")):
+            continue
+        neg_total += 1
+        # relpath na pełnej nazwie PDF-a: Windows obcina końcową kropkę ("...r..pdf" -> "...r.").
+        rel = os.path.splitext(os.path.relpath(pdf, truth_dir))[0] + ".json"
+        pp = os.path.join(pred_dir, rel)
+        pred = json.load(open(pp, encoding="utf-8")) if os.path.isfile(pp) else None
+        if pred == {}:
+            neg_ok += 1
+        else:
+            fp = sum(1 for v in flatten(pred or {}).values() if v is not None)
+            neg_fp += fp
+            neg_bad.append(f"{rel}: {'brak pliku JSON' if pred is None else f'{fp} wartości (FP)'}")
+
     lines = []
     lines.append("# Wynik ewaluacji F1 (definicja UZP, Discord 11:26)")
     lines.append("")
@@ -173,6 +196,13 @@ def main():
     lines.append(f"TP={total['TP']} TN={total['TN']} FP={total['FP']} FN={total['FN']}")
     lines.append(f"**F1 łączny: {f1(total['TP'], total['FP'], total['FN']):.4f}**")
     lines.append("")
+    if neg_total:
+        lines.append("## Dokumenty negatywne (oczekiwany pusty JSON {})")
+        lines.append(f"- poprawnie puste: {neg_ok}/{neg_total}, FP z niepustych negatywów: {neg_fp}")
+        lines.append(f"- F1 łączny z negatywami: {f1(total['TP'], total['FP'] + neg_fp, total['FN']):.4f}")
+        for b in neg_bad:
+            lines.append(f"  - {b}")
+        lines.append("")
     lines.append("## F1 per typ dokumentu")
     for dtype, c in sorted(by_type.items()):
         lines.append(f"- {dtype}: F1={f1(c['TP'], c['FP'], c['FN']):.4f} (TP={c['TP']} FP={c['FP']} FN={c['FN']} TN={c['TN']})")
