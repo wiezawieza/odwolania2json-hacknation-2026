@@ -8,7 +8,7 @@ Użycie:
 Wymagania: Python 3.13+, pip install -r requirements.txt
 Klucz API (open-source LLM po API z dostawcą z UE):
   LLM_API_KEY lub MISTRAL_API_KEY, opcjonalnie LLM_API_BASE / LLM_MODEL.
-Bez klucza i bez Ollamy aplikacja działa w trybie regex+heurystyka.
+Bez klucza API aplikacja działa w trybie deterministycznym (regex + heurystyka).
 """
 
 import argparse

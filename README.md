@@ -62,7 +62,7 @@ Zawartość `.env`:
 ```env
 LLM_API_KEY=twoj_klucz_mistral
 ```
-*Aplikacja działa w pełni autonomicznie również bez podanego klucza (fallback na lokalną Ollamę lub reguły deterministyczne).*
+*Aplikacja działa w pełni autonomicznie również bez podanego klucza (fallback na reguły deterministyczne).*
 
 ### Uruchomienie CLI (przetwarzanie wsadowe)
 
@@ -101,12 +101,11 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000`. Umożliwia przeci
      - Identyfikatory postępowań: numery referencyjne spraw, ogłoszenia BZP i TED (kanoniczny format `XXXXXX-YYYY`).
      - Kwoty i daty transakcji (eliminacja mylenia daty operacji z datą generowania wyciągu).
      - Konsorcja i reprezentacja: prawidłowe rozdzielanie członków konsorcjum (Lider vs Partner) oraz podpisujących.
-4. **Hierarchia silników LLM (wyłącznie Open Source):**
-   - W runtime **nie są używane** modele komercyjne/zamknięte (brak Gemini, Claude).
-   - Kolejność providerów:
-     1. **Primary:** Open-source model po API z dostawcą z UE (**Mistral AI**, `mistral-small-latest`).
-     2. **Fallback 1:** Lokalny silnik **Ollama** (`qwen2.5:7b`, `http://localhost:11434`).
-     3. **Fallback 2:** Deterministyczny fallback heurystyczny (gwarantuje brak przestojów przy braku sieci).
+4. **Hierarchia silników LLM (wyłącznie Open Source / dostawca z UE):**
+   - Zgodnie z wytycznymi UZP hosting prywatny/lokalny jest wykluczony. W runtime **nie są używane** modele komercyjne/zamknięte (brak Gemini, Claude).
+   - Kolejność providerów w runtime:
+     1. **Primary:** Open-source model po API z dostawcą z UE (**Mistral AI**, model open-weights `mistral-small-latest`). Serwery zlokalizowane na terenie UE/EOG, dostawca posiadający Politykę Prywatności określającą zakres i miejsce przetwarzania danych.
+     2. **Fallback:** Pełny tryb deterministyczny (regex + heurystyka). Gwarantuje niezawodność, odporność na limity API i brak opóźnień sieciowych.
    - LLM jest wywoływany **wyłącznie jako fallback do pól niejednoznacznych** (np. `czynnosc_powod_id` 1–12 z pierwszego zarzutu, tytuł zamówienia), gdy reguły deterministyczne napotkają brak danych.
 5. **Moduł spójności sprawy (`case_consistency.py`):**
    - Zgodnie z zasadą *„Zrozum sprawę. Nie tylko dokument.”* po przetworzeniu kompletu dokumentów sprawy następuje walidacja i uzupełnianie braków krzyżowych (np. weryfikacja NIP odwołującego vs mocodawcy, numeru postępowania w tytule przelewu).
@@ -121,7 +120,7 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000`. Umożliwia przeci
 ├── app.py                      # Punkt wejściowy CLI oraz serwer GUI
 ├── extractor.py                # Pipeline OCR, klasyfikator, parser dokumentów
 ├── case_consistency.py         # Walidacja i spójność między dokumentami sprawy
-├── llm.py                      # Klient LLM (Mistral API UE -> Ollama -> Regex)
+├── llm.py                      # Klient LLM (Mistral API UE -> regex fallback)
 ├── evaluate.py                 # Oficjalny skrypt ewaluacji F1 wg wytycznych UZP
 ├── config/
 │   └── document_types.yaml     # Konfiguracja klas dokumentów i słowników

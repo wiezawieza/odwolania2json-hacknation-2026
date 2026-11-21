@@ -437,11 +437,11 @@ def extract_odwolanie(text, config, llm_fields=None):
 
     return {
         "OdwolanieKIO": {
-            "data": date or llm_fields.get("data"),
+            "data": date,
             "czynnosc_dzien": _czynnosc_dzien(text),
             "czynnosc_powod_id": cid,
             "czynnosc_opis": cdesc,
-            "miejscowosc": place or llm_fields.get("miejscowosc"),
+            "miejscowosc": place,
         },
         "Odwolujacy": [{
             "krs": krs,
@@ -733,10 +733,6 @@ def extract_document(pdf_path, config, use_llm=True):
                 needs.append("czynnosc_powod_id")
             if not draft["ZamowieniePubliczne"]["tytul"]:
                 needs.append("tytul")
-            if not draft["OdwolanieKIO"]["miejscowosc"]:
-                needs.append("miejscowosc")
-            if not draft["OdwolanieKIO"]["data"]:
-                needs.append("data")
         if needs:
             prompt = (
                 "Wyciągnij z tekstu TYLKO te pola i zwróć je jako JSON: "
