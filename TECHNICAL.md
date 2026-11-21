@@ -9,6 +9,20 @@ PDF → ekstrakcja tekstu (warstwa tekstowa, a dla skanów OCR Tesseract `pol`) 
 nowe typy dokumentów wyłącznie przez sekcję `extract` w YAML) → walidacja formatu i schematu UZP →
 walidacja spójności sprawy (`case_consistency.py`) → JSON. Dokumenty nierozpoznane i negatywne dają `{}`.
 
+## Integracja z pipeline'em (tryb wsadowy)
+
+- **Walidacja przed zapisem** (`validation.py`): wynik musi być poprawnym JSON-em (bez NaN/Infinity), zawierać tylko
+  pola z definicji klasy (`fields` / `extract` w YAML) i klucze główne, a pola z formatem muszą go spełniać
+  (NIP/KRS 10 cyfr, REGON 9/14, PESEL 11, daty RRRR-MM-DD, kwota liczbą, `czynnosc_powod_id` 1–12).
+  Walidator niczego nie poprawia — błąd to status `INVALID` w raporcie (plik zostaje do wglądu), JSON niezapisywalny → `{}`.
+  Na 439 plikach (wyniki 210 + 16 negatywów, ground truth UZP, przykłady przystąpienia) — 0 fałszywych alarmów.
+- **Raport wsadowy**: `<output>_raport.json` (dla automatu) i `<output>_raport.csv` (Excel, `;`, UTF-8 z BOM),
+  ścieżkę zmienia `--report`. Dla każdego pliku: wynik, typ, status (`OK` / `ODRZUCONO` / `INVALID` / `ERR`),
+  czas w sekundach, OCR, liczba stron, błędy; w podsumowaniu średni czas PDF-a tekstowego i skanu z OCR.
+- **Exit code**: `0` — wszystkie pliki przetworzone (dokument obcy → `{}` to poprawny wynik), `1` — co najmniej jeden
+  `ERR` (wyjątek, plik nie-PDF, brak tekstu, skan bez dostępnego OCR) lub `INVALID`, `2` — brak pliku/folderu wejściowego.
+  Jeden zły plik nie zatrzymuje batcha — każdy PDF ma swój JSON w `output`.
+
 ## Model LLM
 
 | Parametr | Wartość |

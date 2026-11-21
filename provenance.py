@@ -253,6 +253,29 @@ def _locate(path, leaf, value, pages, flat, config, rule=None):
     return hit, ("dopasowano początek tekstu (łamanie wierszy w PDF-ie)" if hit else None)
 
 
+def _null_sought(leaf, rule):
+    """Czego szukała reguła — wyjaśnienie dla urzędnika, dlaczego pole jest null."""
+    if rule:
+        kind = rule.get("rule")
+        labels = ", ".join(f"„{x}”" for x in ([rule["label"]] if isinstance(rule.get("label"), str)
+                                              else rule.get("label") or []))
+        if kind == "party_name":
+            return f"nazwy podmiotu w bloku strony od etykiety {labels}"
+        if kind == "party_id":
+            return f"{str(rule.get('id', '')).upper()} w bloku strony od etykiety {labels}"
+        if kind == "regex":
+            return f"wzorca {rule.get('pattern')}"
+        if kind == "choice":
+            return "jednej z fraz: " + ", ".join(f"„{o[0]}”" for o in rule.get("options", []))
+        if kind == "signers":
+            return "bloku podpisu z imieniem i nazwiskiem"
+        if kind == "numer_postepowania":
+            return "numeru po etykiecie „nr referencyjny / znak sprawy”"
+        if rule.get("hint"):
+            return rule["hint"]
+    return NOTES.get(leaf)
+
+
 def build_provenance(result, doc_type, trace, config, filled_from=None):
     """Lista wierszy {path, value, method, method_label, page, fragment, note} dla GUI.
 
@@ -287,6 +310,11 @@ def build_provenance(result, doc_type, trace, config, filled_from=None):
             asked = bare in requested or leaf in requested
             note = ("reguły nie znalazły wartości, LLM nie podał wartości obecnej w tekście → null"
                     if asked else "brak danych w dokumencie → null (nie wymyślamy wartości)")
+            sought = _null_sought(leaf, rule)
+            if leaf == "imie_nazwisko" and flat.get(path.rsplit(".", 1)[0] + ".typ") == "osoba_prawna":
+                note = "mocodawcą jest podmiot (firma), nie osoba fizyczna — imię i nazwisko nie dotyczy → null"
+            elif sought:
+                note = f"szukano: {sought} — nie znaleziono; {note}"
         elif method == "spojnosc":
             note = f"uzupełnione z innego dokumentu sprawy: {filled_from[path]}"
         elif method == "llm":

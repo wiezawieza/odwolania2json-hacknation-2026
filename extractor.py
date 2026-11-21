@@ -34,10 +34,23 @@ def _flat(text):
 
 def load_config(path=None):
     # Domyślnie względem katalogu aplikacji — działa niezależnie od bieżącego katalogu.
+    custom_dir = None
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "document_types.yaml")
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
+        path = os.path.join(base, "document_types.yaml")
+        custom_dir = os.path.join(base, "custom")
     with open(path, encoding="utf-8") as fh:
-        return yaml.safe_load(fh)
+        config = yaml.safe_load(fh)
+    # Klasy zapisane kreatorem w GUI: config/custom/<id>.yaml = {<id>: {...klasa...}}.
+    # Nie nadpisują klas z document_types.yaml.
+    if custom_dir and os.path.isdir(custom_dir):
+        classes = config.setdefault("classes", {})
+        for fname in sorted(os.listdir(custom_dir)):
+            if fname.endswith((".yaml", ".yml")):
+                with open(os.path.join(custom_dir, fname), encoding="utf-8") as fh:
+                    for cid, cls in (yaml.safe_load(fh) or {}).items():
+                        classes.setdefault(cid, cls)
+    return config
 
 
 # ---------------------------------------------------------------- tekst z PDF
@@ -179,12 +192,22 @@ CLASSIFY_WEIGHTS = {
 
 
 def classify(text, config, filename=""):
+    scores = classify_scores(text, config)
+    if not scores:
+        return "nieznany"
+    best = max(scores, key=lambda k: scores[k])
+    if scores[best] < config.get("classify_min_score", 4):
+        return "nieznany"
+    return best
+
+
+def classify_scores(text, config):
+    """{klasa: punkty} — punktacja klasyfikatora (też do podglądu w kreatorze typów)."""
     first = text[:4000].lower()
     first_normalized = re.sub(r"(?<=\w)\s+(?=\w)", "", first)
     first_ws = re.sub(r"\s+", " ", first)
     scores = {}
     classes = config.get("classes", {})
-    min_score = config.get("classify_min_score", 4)
 
     for name, cls in classes.items():
         w_kws = cls.get("weighted_keywords") or CLASSIFY_WEIGHTS.get(name, [])
@@ -202,14 +225,7 @@ def classify(text, config, filename=""):
             if kl in first_ws or kl in first_normalized:
                 s -= w
         scores[name] = s
-
-    if not scores:
-        return "nieznany"
-
-    best = max(scores, key=lambda k: scores[k])
-    if scores[best] < min_score:
-        return "nieznany"
-    return best
+    return scores
 
 
 # ---------------------------------------------------------------- pomocnicze

@@ -31,3 +31,7 @@ hacknation-uzp-repo/
 Thumbs.db
 .idea/
 .vscode/
+
+# Raporty wsadowe (app.py)
+*_raport.json
+*_raport.csv

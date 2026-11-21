@@ -5,6 +5,13 @@ Użycie:
   python app.py input output --no-llm   # tylko regexy + heurystyka (zero wywołań LLM-a)
   python app.py --serve [--port 8000]   # GUI: dokument z pochodzeniem pól + widok sprawy
 
+Pipeline (tryb wsadowy):
+  * raport <output>_raport.json + .csv (lub --report PLIK): typ, status, czas każdego dokumentu,
+    średni czas PDF tekstowy / skan OCR,
+  * walidacja każdego JSON-a przed zapisem (validation.py),
+  * exit code: 0 = wszystko OK (dokument obcy -> {} to też OK), 1 = co najmniej jeden
+    błąd przetwarzania (ERR) lub walidacji (INVALID), 2 = brak wejścia.
+
 Wymagania: Python 3.13+, pip install -r requirements.txt
 Klucz API (open-source LLM po API z dostawcą z UE):
   LLM_API_KEY lub MISTRAL_API_KEY, opcjonalnie LLM_API_BASE / LLM_MODEL.
@@ -13,16 +20,19 @@ Bez klucza API aplikacja działa w trybie deterministycznym (regex + heurystyka)
 
 import argparse
 import copy
+import csv
 import json
 import os
 import re
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from case_consistency import case_checks, case_summary, check_case  # noqa: E402
 from extractor import extract_document, load_config  # noqa: E402
+from validation import validate_result  # noqa: E402
 
 MAX_UPLOAD = 60 * 1024 * 1024  # łącznie na jedno żądanie GUI
 
@@ -32,10 +42,68 @@ def process_file(pdf_path, config, use_llm=True, trace=None):
     return result, doc_type, info
 
 
-def process_folder(input_dir, output_dir, use_llm=True):
+def _write_json(out_path, result, doc_type, config):
+    """Walidacja przed zapisem; zapis zawsze (dane zostają do wglądu). Zwraca listę błędów walidacji."""
+    errors = validate_result(result, doc_type, config)
+    if errors and errors[0].startswith("wynik nie jest"):
+        result = {}  # nie da się zapisać jako JSON -> pusty JSON, status ERR w raporcie
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(result, fh, ensure_ascii=False, indent=2)
+    return errors
+
+
+def _unreadable(pdf_path, info):
+    """Opis błędu wejścia albo None (plik czytelny)."""
+    try:
+        with open(pdf_path, "rb") as fh:
+            if not fh.read(1024).lstrip().startswith(b"%PDF-"):
+                return "plik nie jest PDF-em (brak nagłówka %PDF-)"
+    except OSError as exc:
+        return f"nie można otworzyć pliku: {exc}"
+    if not info.get("chars"):
+        return ("brak tekstu — skan, a OCR (Tesseract) niedostępny" if info.get("needs_ocr")
+                else "brak tekstu w PDF-ie (uszkodzony lub pusty plik)")
+    return None
+
+
+def _avg(xs):
+    return round(sum(xs) / len(xs), 3) if xs else None
+
+
+def write_report(rows, report_path, total_s):
+    """Raport wsadowy: JSON (pipeline) + CSV (Excel). Zwraca podsumowanie."""
+    by = {}
+    for r in rows:
+        by[r["status"]] = by.get(r["status"], 0) + 1
+    done = [r for r in rows if r["status"] in ("OK", "ODRZUCONO", "INVALID")]
+    summary = {
+        "dokumentow": len(rows), "statusy": by,
+        "czas_lacznie_s": round(total_s, 2),
+        "czas_sredni_s": _avg([r["czas_s"] for r in rows]),
+        "czas_sredni_pdf_tekstowy_s": _avg([r["czas_s"] for r in done if not r["ocr"]]),
+        "czas_sredni_skan_ocr_s": _avg([r["czas_s"] for r in done if r["ocr"]]),
+        "czas_max_s": max((r["czas_s"] for r in rows), default=None),
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as fh:
+        json.dump({"podsumowanie": summary, "dokumenty": rows}, fh, ensure_ascii=False, indent=2)
+    csv_path = os.path.splitext(report_path)[0] + ".csv"
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:  # BOM: polskie znaki w Excelu
+        w = csv.writer(fh, delimiter=";")
+        w.writerow(["plik", "wynik", "typ", "status", "czas_s", "ocr", "strony", "bledy"])
+        for r in rows:
+            w.writerow([r["plik"], r["wynik"], r["typ"], r["status"], str(r["czas_s"]).replace(".", ","),
+                        int(bool(r["ocr"])), r["strony"], " | ".join(r["bledy"])])
+    return summary
+
+
+def process_folder(input_dir, output_dir, use_llm=True, report_path=None):
+    """Tryb wsadowy. Zwraca statystyki; stats['exit_code'] != 0, gdy którykolwiek plik ma błąd."""
     config = load_config()
     os.makedirs(output_dir, exist_ok=True)
     stats = {"ok": 0, "err": 0}
+    rows = []
+    t_start = time.perf_counter()
     # Grupowanie po folderze sprawy (case) — do spójności między dokumentami.
     cases = {}
     case_docs = {}
@@ -49,17 +117,35 @@ def process_folder(input_dir, output_dir, use_llm=True):
             out_case_dir = os.path.join(output_dir, rel_case)
             os.makedirs(out_case_dir, exist_ok=True)
             out_path = os.path.join(out_case_dir, os.path.splitext(fname)[0] + ".json")
+            row = {"plik": os.path.relpath(pdf_path, input_dir), "wynik": os.path.relpath(out_path, output_dir),
+                   "typ": None, "status": None, "czas_s": None, "ocr": False, "strony": None, "bledy": []}
+            rows.append(row)
+            t0 = time.perf_counter()
             try:
                 trace = {}
                 result, doc_type, info = process_file(pdf_path, config, use_llm=use_llm, trace=trace)
+                row.update(typ=doc_type, ocr=bool(info.get("ocr")), strony=info.get("pages"))
+                unreadable = _unreadable(pdf_path, info)
+                if doc_type == "nieznany" and unreadable:
+                    # Uszkodzony / pusty plik / skan bez OCR: {} jak dla dokumentu obcego, ale to błąd wejścia.
+                    stats["err"] += 1
+                    row.update(status="ERR", bledy=[unreadable])
+                    print(f"[ERR] {pdf_path}: {unreadable} -> pusty JSON {{}}")
+                    _write_json(out_path, {}, "nieznany", config)
+                    continue
                 if doc_type == "nieznany":
                     stats["unknown"] = stats.get("unknown", 0) + 1
+                    row["status"] = "ODRZUCONO"
                     print(f"[ODRZUCONO] {pdf_path}: nie udało się znaleźć typu dokumentu (typ: nieznany) -> pusty JSON {{}}")
-                    with open(out_path, "w", encoding="utf-8") as fh:
-                        json.dump({}, fh, ensure_ascii=False, indent=2)
+                    _write_json(out_path, {}, "nieznany", config)
                     continue
-                with open(out_path, "w", encoding="utf-8") as fh:
-                    json.dump(result, fh, ensure_ascii=False, indent=2)
+                row["bledy"] = _write_json(out_path, result, doc_type, config)
+                if row["bledy"]:
+                    row["status"] = "INVALID"
+                    stats["err"] += 1
+                    print(f"[INVALID] {pdf_path}: walidacja JSON: {'; '.join(row['bledy'])}")
+                    continue
+                row["status"] = "OK"
                 case_results = cases.setdefault(rel_case, {})
                 if doc_type in case_results:
                     print(f"[WARN] {pdf_path}: drugi dokument typu {doc_type} w sprawie {rel_case or '.'} — zostawiam pierwszy")
@@ -68,13 +154,17 @@ def process_folder(input_dir, output_dir, use_llm=True):
                 case_docs.setdefault(rel_case, []).append(
                     {"type": doc_type, "result": result, "text": trace.get("text", ""), "filename": fname})
                 stats["ok"] += 1
-                print(f"[OK] {pdf_path} -> {out_path} ({doc_type}, ocr={info.get('ocr')})")
+                print(f"[OK] {pdf_path} -> {out_path} ({doc_type}, ocr={info.get('ocr')}, "
+                      f"{time.perf_counter() - t0:.2f} s)")
             except Exception as exc:  # noqa: BLE001 — jeden zły PDF nie zatrzymuje batcha
                 stats["err"] += 1
+                row.update(status="ERR", bledy=[f"{type(exc).__name__}: {exc}"])
                 print(f"[ERR] {pdf_path}: {exc} -> pusty JSON {{}}")
                 # Każdy plik wejściowy ma swój JSON w output (wymóg UZP); błąd = brak danych.
                 with open(out_path, "w", encoding="utf-8") as fh:
                     json.dump({}, fh, ensure_ascii=False, indent=2)
+            finally:
+                row["czas_s"] = round(time.perf_counter() - t0, 3)
     # Spójność sprawy: uzupełnij braki z innych dokumentów tej samej sprawy.
     for case, case_results in cases.items():
         if len(case_results) >= 2:
@@ -84,12 +174,23 @@ def process_folder(input_dir, output_dir, use_llm=True):
                 print(f"[sprawa {case or '.'}] {u}")
             for doc_type, fixed in _fixed.items():
                 out_path = case_results[doc_type][1]
-                with open(out_path, "w", encoding="utf-8") as fh:
-                    json.dump(fixed, fh, ensure_ascii=False, indent=2)
+                errs = _write_json(out_path, fixed, doc_type, config)
+                if errs:
+                    row = next(r for r in rows if os.path.join(output_dir, r["wynik"]) == out_path)
+                    row.update(status="INVALID", bledy=errs)
+                    stats["ok"] -= 1
+                    stats["err"] += 1
+                    print(f"[INVALID] {out_path} po uzupełnieniu ze sprawy: {'; '.join(errs)}")
             # Kontrole spójności (informacyjnie, nie zmieniają JSON-ów).
             for ch in case_checks(case_docs.get(case, [])):
                 print(f"[sprawa {case or '.'}] {ch['status']:5s} {ch['nazwa']}: {ch['opis']}")
-    print(f"Gotowe: OK={stats['ok']} ERR={stats['err']}")
+    report_path = report_path or os.path.normpath(output_dir).rstrip("\\/") + "_raport.json"
+    summary = write_report(rows, report_path, time.perf_counter() - t_start)
+    stats["exit_code"] = 1 if stats["err"] else 0
+    print(f"Gotowe: OK={stats['ok']} ODRZUCONO={stats.get('unknown', 0)} ERR/INVALID={stats['err']} · "
+          f"czas {summary['czas_lacznie_s']} s, średnio {summary['czas_sredni_s']} s/dok. "
+          f"(PDF tekstowy {summary['czas_sredni_pdf_tekstowy_s']} s, skan OCR {summary['czas_sredni_skan_ocr_s']} s)")
+    print(f"Raport: {report_path} (+ .csv) · exit code {stats['exit_code']}")
     return stats
 
 
@@ -186,15 +287,73 @@ def serve(port=8000, use_llm=True):
             "uwagi": uwagi,
         }
 
+    def wizard_api(path, body, content_type):
+        """Kreator nowego typu dokumentu: /api/wizard/{yaml,test,save}."""
+        import wizard
+
+        pdf = None
+        if path == "/api/wizard/test":
+            parts = _parse_multipart(content_type, body)
+            spec = next((p["data"] for p in parts if p["field"] == "spec"), b"{}")
+            pdf = next((p["data"] for p in parts if p["filename"] and p["field"] != "spec"), None)
+            form = json.loads(spec.decode("utf-8"))
+        else:
+            form = json.loads(body.decode("utf-8") or "{}")
+        try:
+            cid, cls = wizard.build_class(form, config)
+        except ValueError as exc:
+            return {"errors": exc.args[0]}, 422
+        out = {"id": cid, "yaml": wizard.to_yaml(cid, cls)}
+        if path == "/api/wizard/save":
+            saved, new_config = wizard.save_class(cid, cls)
+            config.clear()
+            config.update(new_config)  # nowa klasa działa od razu w zakładkach Dokument/Sprawa
+            out["saved"] = os.path.relpath(saved, os.path.dirname(os.path.abspath(__file__)))
+        elif path == "/api/wizard/test":
+            if not pdf:
+                return {"errors": ["wybierz plik PDF do testu"]}, 422
+            fd, tmp = tempfile.mkstemp(suffix=".pdf", prefix="odwolania2json_wiz_")
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(pdf)
+                from extractor import extract_pages
+                pages, info = extract_pages(tmp)
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            text = "\n".join(pages)
+            tmp_config, res = wizard.test_on_text(cid, cls, text, config)
+            res["provenance"] = build_provenance(res["result"], cid, {"pages": pages, "text": text}, tmp_config)
+            res["info"] = _public_info(info)
+            out.update(res)
+        return out, 200
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path in ("/", "/index.html"):
                 self._send_file(os.path.join(static_dir, "index.html"), "text/html; charset=utf-8")
+            elif self.path == "/api/wizard/rules":
+                import wizard
+                self._send_json({"rules": wizard.rule_catalog(),
+                                 "classes": {k: v.get("label", k) for k, v in config.get("classes", {}).items()}})
             else:
                 self.send_response(404)
                 self.end_headers()
 
         def do_POST(self):
+            if self.path in ("/api/wizard/yaml", "/api/wizard/test", "/api/wizard/save"):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > MAX_UPLOAD:
+                    self._send_json({"error": f"plik za duży (limit {MAX_UPLOAD // 2**20} MB)"}, 413)
+                    return
+                try:
+                    obj, code = wizard_api(self.path, self.rfile.read(length), self.headers.get("Content-Type"))
+                    self._send_json(obj, code)
+                except Exception as exc:  # noqa: BLE001
+                    self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+                return
             if self.path not in ("/api/extract", "/api/case"):
                 self.send_response(404)
                 self.end_headers()
@@ -253,6 +412,7 @@ def main():
     ap.add_argument("--serve", action="store_true", help="uruchom GUI")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--no-llm", action="store_true", help="tylko regexy, bez LLM-a")
+    ap.add_argument("--report", default=None, help="ścieżka raportu wsadowego JSON (domyślnie <output>_raport.json)")
     args = ap.parse_args()
     if args.no_llm:
         # Wyłącza KAŻDE wywołanie LLM-a, także normalizację nazwisk do mianownika.
@@ -266,22 +426,35 @@ def main():
             os.makedirs(out_path, exist_ok=True)
             out_path = os.path.join(out_path, os.path.splitext(os.path.basename(args.input))[0] + ".json")
         os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        t0 = time.perf_counter()
         try:
             result, doc_type, info = process_file(args.input, config, use_llm=not args.no_llm)
         except Exception as exc:  # noqa: BLE001
             print(f"[ERR] {args.input}: {exc} -> pusty JSON {{}}")
-            result, doc_type, info = {}, "nieznany", {}
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump({}, fh, ensure_ascii=False, indent=2)
+            sys.exit(1)
+        unreadable = _unreadable(args.input, info) if doc_type == "nieznany" else None
+        if unreadable:
+            print(f"[ERR] {args.input}: {unreadable} -> pusty JSON {{}}")
+            _write_json(out_path, {}, "nieznany", config)
+            sys.exit(1)
         if doc_type == "nieznany" or result is None:
             # Dokument obcy -> pusty JSON {} (tak samo jak w trybie wsadowym).
             print(f"[ODRZUCONO] {args.input}: nie udało się znaleźć typu dokumentu (typ: nieznany) -> pusty JSON {{}}")
-            with open(out_path, "w", encoding="utf-8") as fh:
-                json.dump({}, fh, ensure_ascii=False, indent=2)
+            _write_json(out_path, {}, "nieznany", config)
             sys.exit(0)
-        with open(out_path, "w", encoding="utf-8") as fh:
-            json.dump(result, fh, ensure_ascii=False, indent=2)
-        print(f"[OK] {args.input} -> {out_path} ({doc_type}, ocr={info.get('ocr')})")
+        errors = _write_json(out_path, result, doc_type, config)
+        if errors:
+            print(f"[INVALID] {args.input}: walidacja JSON: {'; '.join(errors)}")
+            sys.exit(1)
+        print(f"[OK] {args.input} -> {out_path} ({doc_type}, ocr={info.get('ocr')}, {time.perf_counter() - t0:.2f} s)")
+    elif os.path.isdir(args.input):
+        stats = process_folder(args.input, args.output, use_llm=not args.no_llm, report_path=args.report)
+        sys.exit(stats["exit_code"])
     else:
-        process_folder(args.input, args.output, use_llm=not args.no_llm)
+        print(f"[ERR] brak pliku ani folderu wejściowego: {args.input}")
+        sys.exit(2)
 
 
 if __name__ == "__main__":

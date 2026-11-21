@@ -87,6 +87,20 @@ Tryb bez LLM (czysty regex + heurystyka, zero wywołań API — także bez norma
 python app.py input output --no-llm
 ```
 
+**Integracja z pipeline'em:** każdy JSON jest walidowany przed zapisem (`validation.py`), a batch zapisuje raport `output_raport.json` + `output_raport.csv` (typ, status `OK` / `ODRZUCONO` / `INVALID` / `ERR`, czas każdego dokumentu, OCR, strony, błędy; ścieżka: `--report`). Exit code: `0` — wszystko przetworzone, `1` — co najmniej jeden błąd przetwarzania lub walidacji, `2` — brak wejścia. Szczegóły: [TECHNICAL.md](TECHNICAL.md).
+
+### Zmierzony czas przetwarzania
+
+Pełny zbiór treningowy (226 PDF-ów: 210 z ground truth + 16 negatywów), **cache OCR wyczyszczony** (każdy skan OCR-owany od zera), tryb domyślny, laptop Intel Core i7-6700HQ (4 rdzenie, 2016), 16 GB RAM, Tesseract `pol`. Wynik z raportu wsadowego (`czas_s` każdego dokumentu):
+
+| Rodzaj dokumentu | Liczba | Średnio | Mediana | Maks. | Na stronę |
+|---|:---:|:---:|:---:|:---:|:---:|
+| PDF tekstowy | 184 | **0,010 s** | 0,006 s | 0,14 s | < 0,01 s |
+| Skan (OCR Tesseract) | 33 | **8,9 s** | 2,8 s | 30,4 s | 3,7 s |
+| Cały zbiór (226) | 226 | 1,3 s | — | — | — |
+
+Łącznie 295 s; F1 w tym przebiegu = 1,0000, negatywy 16/16. Czas skanu zależy głównie od liczby stron (OCR ok. 3,7 s/stronę). Ponowne przetworzenie tego samego skanu korzysta z cache OCR (`.cache_ocr/`, klucz: treść pliku) — ok. 0,03 s.
+
 ### Uruchomienie interfejsu webowego (GUI)
 
 ```bash
@@ -94,6 +108,8 @@ python app.py --serve --port 8000
 ```
 Interfejs dostępny jest pod adresem: `http://localhost:8000` (bez zewnętrznych zależności, działa na Pythonie 3.13+):
 - **Dokument** — podgląd PDF obok wyniku. Każde pole JSON-a ma **pochodzenie**: metodę (`regex` / `heurystyka` / `LLM` / `null — brak danych` / `spójność sprawy`), numer strony (klik przenosi podgląd PDF na tę stronę) i fragment tekstu źródłowego z podświetloną wartością. Metoda „LLM” to fakt, nie deklaracja: pole różni się od wyniku tego samego dokumentu przetworzonego z wyłączonym LLM-em. Metadane pochodzenia **nie trafiają do JSON-a** — „Pobierz JSON” zwraca wyłącznie model UZP.
+- **Wyjaśnienia dla urzędnika** — przy każdym polu nota „dlaczego taka wartość” (reguła, strona, fragment) albo „dlaczego null” (czego szukano, np. „szukano: 11 cyfr po „PESEL” przy osobie — nie znaleziono”; „mocodawcą jest firma — imię i nazwisko nie dotyczy”).
+- **Nowy typ dokumentu (kreator)** — formularz bez pisania kodu: identyfikator i nazwa typu, słowa kluczowe z wagami (rozpoznawanie), pola JSON-a (ścieżka z kropkami = zagnieżdżenie) z regułą dla każdego pola wybraną z budulców silnika (data/miejscowość z nagłówka, nazwa/NIP/KRS/REGON/PESEL strony, numer postępowania, własny regex, wybór z listy, podpisujący, stała). **Testuj na PDF-ie** pokazuje punktację klasyfikatora (czy PDF zostanie rozpoznany jako nowy typ), wynikowy JSON i pochodzenie każdego pola — bez LLM-a. **Zapisz typ** tworzy `config/custom/<id>.yaml`; typ działa od razu w GUI i w CLI (wczytywany przez `load_config`, nie nadpisuje klas z `document_types.yaml`). **Pobierz YAML** — gotowy wpis do przeglądu/commita. Formularz waliduje dane (zajęte nazwy, wagi, poprawność regexów, kolizje ścieżek) i zwraca błędy po polsku.
 - **Sprawa** — kilka PDF-ów jednej sprawy (typ rozpoznawany po treści) → jeden scalony podgląd (odwołujący, zamawiający, numer postępowania, kwota wpisu — przy każdej wartości dokument źródłowy) oraz kontrole spójności z wynikiem **OK / UWAGA**: NIP odwołującego vs mocodawcy, kwota przelewu vs wpis od odwołania (rozróżnia przelew tytułem wpisu od opłaty skarbowej od pełnomocnictwa), numer postępowania w tytule przelewu, pełnomocnik z odwołania na liście pełnomocników. Te same kontrole wypisuje tryb wsadowy CLI.
 
 ---
@@ -107,7 +123,7 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000` (bez zewnętrznych
    - Klasyfikacja bazuje na ważonych sygnałach słownikowych z `config/document_types.yaml`: `odwolanie`, `pelnomocnictwo`, `przelew`, `przystapienie`, `nieznany`. Sygnały negatywne (`negative_keywords`, np. „orzeka:”, „po rozpoznaniu na posiedzeniu”) odejmują punkty — orzeczenia KIO, które używają słownictwa odwołań, trafiają do `nieznany`.
    - **Nowe typy dokumentów dodaje się bez ingerencji w kod źródłowy.** Trzy klasy bazowe mają dedykowane ekstraktory; każda nowa klasa jest ekstrahowana wyłącznie według sekcji `extract` w YAML: zagnieżdżenie kluczy = struktura wynikowego JSON-a, każdy liść = reguła z gotowych budulców silnika (`header_date`, `header_place`, `party_name`, `party_id`, `numer_postepowania`, `regex`, `choice`, `signers`, `const`). Flaga `llm: true` pozwala LLM-owi uzupełnić pole puste po regułach — wartość jest przyjmowana tylko po walidacji formatu i gdy występuje w tekście dokumentu. Klasa z samą listą `fields` (bez reguł) działa w trybie „tylko LLM” z tą samą walidacją.
    - Zweryfikowane na 4. typie — zgłoszenie przystąpienia do postępowania odwoławczego (art. 524 Pzp): w kodzie nie ma żadnej linii specyficznej dla tego typu, całość to sekcja `przystapienie` w YAML; **F1 = 1,0000** na przykładach w `examples/przystapienie/`.
-   - **Obsługa dokumentów obcych (`nieznany`):** jeśli dokument nie należy do żadnej ze wspieranych kategorii spraw KIO, generowany jest **pusty JSON `{}`** o nazwie pliku wejściowego (także w trybie pojedynczego pliku i przy błędzie odczytu PDF-a). Nie powoduje to przerwania procesu przetwarzania wsadowego.
+   - **Obsługa dokumentów obcych (`nieznany`):** jeśli dokument nie należy do żadnej ze wspieranych kategorii spraw KIO, generowany jest **pusty JSON `{}`** o nazwie pliku wejściowego (także w trybie pojedynczego pliku i przy błędzie odczytu PDF-a). Nie powoduje to przerwania procesu przetwarzania wsadowego. Dokument obcy to status `ODRZUCONO` (poprawny wynik), a plik nieczytelny (nie-PDF, brak tekstu, skan bez dostępnego OCR) to status `ERR` w raporcie i exit code 1.
 3. **Ekstrakcja deterministyczna (Zero Hallucination):**
    - Pola jednoznaczne wyciągane są w 100% deterministycznie z walidacją formatu:
      - Numery identyfikacyjne: NIP (10 cyfr), KRS (10 cyfr), REGON (9 lub 14 cyfr).
@@ -135,12 +151,15 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000` (bez zewnętrznych
 ├── app.py                      # Punkt wejściowy CLI oraz serwer GUI
 ├── extractor.py                # Pipeline OCR, klasyfikator, parser dokumentów
 ├── case_consistency.py         # Walidacja i spójność między dokumentami sprawy
-├── provenance.py               # Pochodzenie wartości dla GUI (metoda, strona, fragment)
+├── provenance.py               # Pochodzenie wartości dla GUI (metoda, strona, fragment, dlaczego null)
+├── wizard.py                   # Kreator nowego typu dokumentu (formularz GUI -> YAML -> test na PDF-ie)
+├── validation.py               # Walidacja JSON przed zapisem (struktura klasy, formaty pól)
 ├── llm.py                      # Klient LLM (Ministral 3 3B przez Mistral API UE -> fallback deterministyczny)
 ├── TECHNICAL.md                # Opis techniczny: architektura i model LLM
 ├── evaluate.py                 # Oficjalny skrypt ewaluacji F1 wg wytycznych UZP
 ├── config/
 │   ├── document_types.yaml     # Konfiguracja klas dokumentów i słowników
+│   ├── custom/                 # (opcjonalnie) typy zapisane kreatorem w GUI
 │   └── schemas/                # Schematy JSON dla klas dokumentów
 ├── examples/
 │   └── przystapienie/          # Syntetyczne przykłady PDF + JSON dla typu przystapienie
