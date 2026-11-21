@@ -104,3 +104,51 @@ def extract_fields_llm(text, prompt):
         return json.loads(raw[start : end + 1])
     except json.JSONDecodeError:
         return None
+
+
+def normalize_name_nominative_llm(name):
+    """Sprowadza imię i nazwisko do mianownika (casus nominativus) przez Mistral API."""
+    if os.environ.get("LLM_OFF") == "1":
+        return None
+    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("MISTRAL_API_KEY")
+    api_base = os.environ.get("LLM_API_BASE", DEFAULT_API_BASE)
+    model = os.environ.get("LLM_MODEL", DEFAULT_MODEL)
+    if not api_key or not name:
+        return None
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Zamień podane odmienione imię i nazwisko na formę podstawową (mianownik, casus nominativus).\n"
+                    "Zachowaj kolejność Imię Nazwisko.\n"
+                    "Przykłady:\n"
+                    "- Jana Kowalskiego -> Jan Kowalski\n"
+                    "- Janowi Kowalskiemu -> Jan Kowalski\n"
+                    "- Aleksandry Nowak -> Aleksandra Nowak\n"
+                    "Odpowiedz TYLKO samym imieniem i nazwiskiem w mianowniku, bez żadnego dodatkowego tekstu ani cudzysłowów."
+                ),
+            },
+            {"role": "user", "content": name.strip()},
+        ],
+        "temperature": 0.0,
+    }
+    try:
+        data = _post_json(
+            api_base.rstrip("/") + "/chat/completions",
+            payload,
+            {"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
+        res = data["choices"][0]["message"]["content"].strip().strip("'\"`")
+        if res.lower() in ("null", "none", ""):
+            return None
+        parts = res.split()
+        if len(parts) >= 2:
+            return " ".join(parts)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[llm] Błąd normalizacji nazwiska ({name}): {exc}")
+        return None
+

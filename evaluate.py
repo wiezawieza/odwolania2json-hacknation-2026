@@ -93,13 +93,21 @@ def f1(tp, fp, fn):
     return 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else 0.0
 
 
-def _doc_type(fname):
-    if "odwolanie" in fname:
+def _doc_type(path, data=None):
+    p = path.lower()
+    if "odwolan" in p:
         return "odwolanie"
-    if "pelnomocnictwo" in fname:
+    if "pelnomocnictw" in p:
         return "pelnomocnictwo"
-    if "przelew" in fname:
+    if "przelew" in p or "potwierdzen" in p:
         return "przelew"
+    if data:
+        if "OdwolanieKIO" in data:
+            return "odwolanie"
+        if "mocodawca" in data:
+            return "pelnomocnictwo"
+        if "przelew_bankowy" in data:
+            return "przelew"
     return "inny"
 
 
@@ -107,9 +115,6 @@ def main():
     truth_dir = sys.argv[1] if len(sys.argv) > 1 else "dane"
     pred_dir = sys.argv[2] if len(sys.argv) > 2 else ("output_test" if os.path.isdir("output_test") else "output")
     truth_files = sorted(glob.glob(os.path.join(truth_dir, "**", "*.json"), recursive=True))
-    # Dopasowanie po numerze sprawy + typie dokumentu (nazwy plików się różnią:
-    # truth "przelew.json" <-> pred "potwierdzenie_przelewu.json"; nie wolno
-    # mapować tylko po basename, bo 60 plików nazywa się tak samo).
     pred_files = glob.glob(os.path.join(pred_dir, "**", "*.json"), recursive=True)
 
     def _case_no(path):
@@ -117,6 +122,10 @@ def main():
         return int(m.group(1)) if m else None
 
     def _find_pred(truth_path):
+        rel = os.path.relpath(truth_path, truth_dir)
+        direct = os.path.join(pred_dir, rel)
+        if os.path.isfile(direct):
+            return direct
         base = os.path.basename(truth_path)
         case_no = _case_no(truth_path)
         cands = []
@@ -126,11 +135,10 @@ def main():
             pb = os.path.basename(pf)
             if pb == base:
                 return pf
-            if base == "przelew.json" and pb == "potwierdzenie_przelewu.json":
-                cands.append(pf)
-            if base == "potwierdzenie_przelewu.json" and pb == "przelew.json":
+            if base in ("przelew.json", "potwierdzenie_przelewu.json") and pb in ("potwierdzenie_przelewu.json", "przelew.json"):
                 cands.append(pf)
         return cands[0] if cands else None
+
     total = Counter()
     by_type = defaultdict(Counter)
     field_stats = defaultdict(Counter)
@@ -147,7 +155,7 @@ def main():
         pred = json.load(open(pf, encoding="utf-8"))
         (tp, tn, fp, fn), per_field = score_pair(pred, truth)
         total.update({"TP": tp, "TN": tn, "FP": fp, "FN": fn})
-        by_type[_doc_type(name)].update({"TP": tp, "TN": tn, "FP": fp, "FN": fn})
+        by_type[_doc_type(tf, truth)].update({"TP": tp, "TN": tn, "FP": fp, "FN": fn})
         for field, res in per_field.items():
             base = field.split("[")[0].rsplit(".", 1)[-1] if "." in field else field
             field_stats[field][res] += 1

@@ -6,7 +6,7 @@ Projekt realizuje zadanie automatycznej analizy i ekstrakcji informacji z akt sp
 
 ---
 
-## 🏆 Wyniki ewaluacji F1 (60 spraw treningowych, 180 dokumentów)
+## 🏆 Wyniki ewaluacji F1 (210 dokumentów: 60 spraw treningowych + 30 skanów UZP)
 
 Wynik mierzony oficjalnym skryptem `evaluate.py` zgodnie z definicją metryki UZP:
 - **TP (True Positive):** wartość zgodna z ground truth (dla długich stringów: podobieństwo `difflib.SequenceMatcher >= 0.80`).
@@ -17,12 +17,18 @@ Wynik mierzony oficjalnym skryptem `evaluate.py` zgodnie z definicją metryki UZ
 
 Szczegółowy raport znajduje się w pliku [EVAL.md](EVAL.md):
 
-| Typ dokumentu | Dokumenty | TP | TN | FP | FN | F1 Score |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Odwołanie** | 60 | 1214 | 121 | 0 | 0 | **1,0000 (100%)** |
-| **Pełnomocnictwo** | 60 | 458 | 163 | 0 | 0 | **1,0000 (100%)** |
-| **Przelew bankowy** | 60 | 360 | 0 | 0 | 0 | **1,0000 (100%)** |
-| **ŁĄCZNIE** | **180** | **2032** | **284** | **0** | **0** | **1,0000 (100%)** |
+| Zbiór danych | Typy dokumentów | Liczba dok. | TP | TN | FP | FN | F1 Score |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Tekstowe PDF (60 spraw)** | Odwołanie, Pełnomocnictwo, Przelew | 180 | 2032 | 284 | 0 | 0 | **1,0000 (100%)** |
+| **Skany syntetyczne (OCR)** | Odwołanie, Pełnomocnictwo, Przelew | 30 | 309 | 79 | 0 | 0 | **1,0000 (100%)** |
+| **ŁĄCZNIE (Wszystkie zbiory)** | **Pełny zestaw referencyjny UZP** | **210** | **2341** | **363** | **0** | **0** | **1,0000 (100%)** |
+
+### Wyniki per typ dokumentu (na całym zbiorze 210 dokumentów):
+- **Odwołanie (70 dokumentów):** F1 = **1,0000** (TP=1391, TN=169, FP=0, FN=0)
+- **Pełnomocnictwo (70 dokumentów):** F1 = **1,0000** (TP=536, TN=188, FP=0, FN=0)
+- **Przelew bankowy (70 dokumentów):** F1 = **1,0000** (TP=414, TN=6, FP=0, FN=0)
+
+> **Zasada UZP (15:55) — Mianownik (casus nominativus):** Wszystkie pola `imie_nazwisko` (pełnomocnicy, mocodawca, podpisujący) są normalizowane do formy mianownikowej. Priorytet ma mianownik z dokumentu (pieczęć, blok podpisu pod kropkami `.....`, formuła przyjęcia pełnomocnictwa, lista radców). Formy odmienione podlegają normalizacji przez LLM (Mistral API z UE) z walidacją regułową; brak możliwości sprowadzenia do mianownika skutkuje zwróceniem `null` (bezwzględny zakaz kopiowania form deklinacyjnych).
 
 > **Brak overfittingu:** Rozwiązanie przeszło test odporności na zmodyfikowanych, syntetycznych danych (zmienione nazwy podmiotów, przesunięte daty, nowe numery spraw, BZP i TED), zachowując wynik **F1 = 1,0000**. W kodzie nie ma żadnych zahardkodowanych wartości ze zbioru treningowego.
 

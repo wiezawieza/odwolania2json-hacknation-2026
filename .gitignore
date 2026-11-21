@@ -24,6 +24,7 @@ input_*/
 
 # Upstream training repository
 hacknation-uzp-repo/
+.cache_ocr/
 
 # OS and IDE files
 .DS_Store

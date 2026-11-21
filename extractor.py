@@ -73,13 +73,34 @@ def _ocr_pages(pdf_path, pages):
         return pages, False
     used = False
     new_pages = list(pages)
+    cache_dir = os.path.join(os.path.dirname(__file__), ".cache_ocr")
+    os.makedirs(cache_dir, exist_ok=True)
+    mtime = os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0
+
     for i, page in enumerate(doc):
         if len((pages[i] if i < len(pages) else "").strip()) >= 200:
             continue
+        import hashlib
+        cache_key = hashlib.sha256(f"{os.path.abspath(pdf_path)}_{mtime}_{i}".encode("utf-8")).hexdigest()[:16]
+        cache_file = os.path.join(cache_dir, f"{cache_key}.txt")
+        if os.path.isfile(cache_file):
+            try:
+                with open(cache_file, encoding="utf-8") as cf:
+                    new_pages[i] = cf.read()
+                used = True
+                continue
+            except Exception:
+                pass
         try:
             pix = page.get_pixmap(dpi=300)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            new_pages[i] = pytesseract.image_to_string(img, lang="pol")
+            txt = pytesseract.image_to_string(img, lang="pol")
+            try:
+                with open(cache_file, "w", encoding="utf-8") as cf:
+                    cf.write(txt)
+            except Exception:
+                pass
+            new_pages[i] = txt
             used = True
         except Exception:
             continue
@@ -118,10 +139,16 @@ CLASSIFY_WEIGHTS = {
                         ("pełnomocnik jest umocowany", 2), ("udzielam pełnomocnictwa", 2)],
     "przelew": [("potwierdzenie wykonania przelewu", 5), ("polecenie przelewu", 5),
                 ("potwierdzenie przelewu", 4), ("dowód wykonania przelewu", 4),
-                ("rachunek odbiorcy", 3), ("rachunek zleceniodawcy", 3),
+                ("potwierdzenie transakcji", 5), ("przelew elixir", 5), ("przelew krajowy", 5),
+                ("szczegóły zlecenia", 4), ("typ zlecenia", 4), ("typ przelewu", 4),
+                ("typ transakcji", 4), ("kwota przelewu", 4),
+                ("z rachunku", 3), ("na rachunek", 3), ("dane nadawcy", 3), ("dane odbiorcy", 3),
+                ("dane kontrahenta", 3), ("rachunek kontrahenta", 4),
+                ("rachunek odbiorcy", 3), ("rachunek zleceniodawcy", 4),
                 ("rachunek obciążany", 3), ("zleceniodawca", 3),
-                ("tytuł przelewu", 3), ("data operacji", 2),
-                ("numer referencyjny", 2), ("kwota operacji", 2)],
+                ("tytuł przelewu", 3), ("data operacji", 2), ("data wykonania", 3),
+                ("data księgowania", 2), ("numer referencyjny", 2), ("kwota operacji", 2),
+                ("przelew", 2)],
 }
 
 
@@ -187,7 +214,7 @@ def _parse_pl_date(text):
     )
     if m:
         return _iso_date(m.group(1), MONTHS_PL[m.group(2).lower()], m.group(3))
-    m = re.search(r"(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})", text)
+    m = re.search(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})", text)
     if m:
         return _iso_date(m.group(1), m.group(2), m.group(3))
     m = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
@@ -208,6 +235,14 @@ def _header_date_place(text):
         date = _parse_pl_date(m.group(2))
         if date and place:
             return date, place
+    # Fallback tylko dla linii 1-3 na skanach: 'Łódź 05.06.2026r.'
+    for l in p1.splitlines()[:3]:
+        m_top = re.match(r"^\s*([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)\s+(\d{1,2}[./]\d{1,2}[./]\d{4}\s*r?\.?)", l.strip())
+        if m_top:
+            place = m_top.group(1).strip()
+            date = _parse_pl_date(m_top.group(2))
+            if date and place and place.lower() not in ("prezes", "zamawiający", "odwołujący", "kancelaria"):
+                return date, place
     return None, None
 
 
@@ -236,7 +271,65 @@ def _ids_from_block(block):
     return krs, nip, regon
 
 
+def is_inflected_name(name):
+    """Zwraca True, jeśli imię lub nazwisko wykazuje cechy formy odmienionej (nie-mianownik)."""
+    if not name or not isinstance(name, str):
+        return False
+    parts = name.strip().split()
+    if len(parts) < 2:
+        return False
+    first, last = parts[0], parts[-1]
+    f_low, l_low = first.lower(), last.lower()
+
+    if l_low.endswith(("skiego", "ckiego", "dzkiego", "skiemu", "ckiemu", "dzkiemu", "skim", "ckim", "dzkim", "skiej", "ckiej", "dzkiej", "ską", "cką", "dzką")):
+        return True
+    if f_low.endswith("owi") or f_low.endswith("em") or f_low.endswith("łem") or f_low.endswith("ę"):
+        return True
+    return False
+
+
+def normalize_person_name(name, full_doc_text=""):
+    """Zasada UZP (15:55): wszystkie imie_nazwisko w mianowniku.
+    1. Bierz z miejsca, gdzie występuje w mianowniku (blok podpisu, 'Pełnomocnik: Jan Kowalski').
+    2. Form odmienionych nie kopiuj bez normalizacji.
+    3. Jak brak mianownika w tekście -> LLM (Mistral). Jak się nie uda -> zwróć None (null).
+    """
+    if not name or not isinstance(name, str):
+        return None
+    name = " ".join(name.strip().split())
+    if not is_inflected_name(name):
+        return name
+
+    # 1. Szukaj mianownika w dokumencie (blok podpisu, nagłówek, lista)
+    if full_doc_text:
+        parts = name.split()
+        first, last = parts[0], parts[-1]
+        candidates = re.findall(NAME2_RE, full_doc_text)
+        for cand in candidates:
+            cand_clean = " ".join(cand.split())
+            if not is_inflected_name(cand_clean):
+                c_parts = cand_clean.split()
+                if len(c_parts) == 2:
+                    if c_parts[1][:4].lower() == last[:4].lower() and c_parts[0][:3].lower() == first[:3].lower():
+                        return cand_clean
+
+    # 2. Użyj LLM (Mistral API)
+    try:
+        from llm import normalize_name_nominative_llm
+        norm = normalize_name_nominative_llm(name)
+        if norm and not is_inflected_name(norm):
+            return norm
+    except Exception:
+        pass
+
+    # 3. Jeśli nie udało się sprowadzić do mianownika -> null (nie kopiuj formy odmienionej)
+    return None
+
+
 def _first_name_line(block):
+    m_pod = re.search(r"pod\s+(?:firmą|nazwą)[:\s]*\n\s*([^\n]+)", block, re.IGNORECASE)
+    if m_pod:
+        return m_pod.group(1).strip()
     for line in block.splitlines():
         line = line.strip().lstrip(":-–— ").strip()
         if line and not re.fullmatch(r"[\W_]+", line) and not any(
@@ -276,6 +369,7 @@ CZYNNOSC_RULES = [
         r"decyzj[aei]\s+o\s+wykluczeni",
     ]),
     (2, [
+        r"wybor(?:ze|u|e)\s+(?:jako\s+najkorzystniejszej\s+)?ofert",
         r"wybor(?:ze|u|e)\s+ofert",
         r"wybra(?:ł|ła|ło|li)\s+ofert",
         r"ogłosi(?:ł|enie|enia)\s+wybór",
@@ -286,6 +380,8 @@ CZYNNOSC_RULES = [
         r"odpowiedzi\s+i\s+wyjaśnie",
         r"udzieli(?:ł|enia)\s+(?:odpowiedzi|wyjaśnie)",
         r"wyjaśnie(?:ń|nia)\s+treści\s+swz",
+        r"wyjaśnie(?:ń|nia)\s+swz",
+        r"treści\s+wyjaśnie",
         r"wyjaśnie(?:ń|nia)\s+do\s+swz",
     ]),
     (5, [
@@ -318,6 +414,20 @@ CZYNNOSC_RULES = [
 # ---------------------------------------------------------------- odwołanie
 def _czynnosc(text, config):
     """Powód TYLKO z pierwszego zarzutu lub zaskarżonej czynności przed Zarzutem 1."""
+    # 0. Wprost pod 'wnoszę odwołanie wobec: ... 1. ...'
+    m_wn = re.search(r"wnoszę\s+odwołanie\s+wobec:?[\s\S]{0,500}?(?:^|\n)\s*[1I|l]\.?\s*([^\n;]+)", text, re.IGNORECASE)
+    if m_wn:
+        wn_text = m_wn.group(1).lower()
+        for cid, patterns in CZYNNOSC_RULES:
+            for pat in patterns:
+                if re.search(pat, wn_text):
+                    return cid, config["czynnosc_powod"].get(cid)
+        wn_text = m_wn.group(1).lower()
+        for cid, patterns in CZYNNOSC_RULES:
+            for pat in patterns:
+                if re.search(pat, wn_text):
+                    return cid, config["czynnosc_powod"].get(cid)
+
     # 1. Jeśli w Zarzucie 1 jest myślnik: 'Zarzut nr 1 – ...' lub 'Zarzut nr 1 - ...'
     m_dash = re.search(r"Zarzut\s+nr\s+1\s*[–—-]\s*([^\n;]+)", text, re.IGNORECASE)
     if m_dash:
@@ -360,6 +470,8 @@ def _czynnosc(text, config):
         scopes.append(m1.group(0))
     if m_all:
         scopes.append(m_all.group(0))
+    if m_wn:
+        scopes.append(m_wn.group(0))
     for scope in scopes:
         low = scope.lower()
         for *keys, cid in config.get("czynnosc_keywords", []):
@@ -371,11 +483,17 @@ def _czynnosc(text, config):
 
 def _czynnosc_dzien(text):
     m = re.search(
-        r"w dniu\s+(\d{1,2})\s+(stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia|września|wrzesnia|października|pazdziernika|listopada|grudnia)\s+(\d{4})",
+        r"(?:w\s+dniu|pismem\s+z)\s+(\d{1,2})\s+(stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia|września|wrzesnia|października|pazdziernika|listopada|grudnia)\s+(\d{4})",
         text, re.IGNORECASE,
     )
     if m:
         return _iso_date(m.group(1), MONTHS_PL[m.group(2).lower()], m.group(3))
+    m2 = re.search(r"(?:w\s+dniu|pismem\s+z)\s+(\d{1,2})[./\-](\d{1,2})[./\-](\d{4})", text, re.IGNORECASE)
+    if m2:
+        return _iso_date(m2.group(1), m2.group(2), m2.group(3))
+    m3 = re.search(r"zaskarżonej\s+czynności\s+została\s+(?:przekazana|opublikowana)\s+w\s+dniu\s+(\d{1,2})[./\-](\d{1,2})[./\-](\d{4})", text, re.IGNORECASE)
+    if m3:
+        return _iso_date(m3.group(1), m3.group(2), m3.group(3))
     return None
 
 
@@ -391,27 +509,94 @@ def extract_odwolanie(text, config, llm_fields=None):
             cid, cdesc = None, None
 
     odw_block = _party_block(text, "Odwołujący:")
-    m_kons = re.search(r"1\)\s*(?:Lider\s+Konsorcjum\s*:?\s*)?\n\s*([^\n,]+)", odw_block, re.IGNORECASE)
+    m_kons = re.search(r"1\)\s*(?:Lider\s+Konsorcjum\s*:?\s*)?(?:\n\s*)?([^\n,\(]+)", odw_block, re.IGNORECASE)
     if m_kons and "konsorcjum" in odw_block.lower():
         odw_name = m_kons.group(1).strip()
     else:
         odw_name = _first_name_line(odw_block)
     krs, nip, regon = _ids_from_block(odw_block)
+
+    # Pelnomocnik
     peln_match = re.search(
-        r"reprezentowan[ay] przez:\s*(?:r\.\s*pr\.|adw\.|mec\.)?\s*(" + NAME2_RE + ")",
+        r"(?:reprezentowan[a-ząćęłńóśźż/]*\s+przez(?:\s+pełnomocnika)?[:\s\.]*)?(?:radc[ay]\s+prawn[ya]|adwokat|r\.\s*pr\.|adw\.|mec\.)\s*(" + NAME2_RE + ")",
         _flat(odw_block), re.IGNORECASE,
     )
+    if not peln_match:
+        peln_match = re.search(
+            r"reprezentowan[a-ząćęłńóśźż/]*\s+przez(?:\s+pełnomocnika)?[:\s\.]*\s*(" + NAME2_RE + ")",
+            _flat(odw_block), re.IGNORECASE,
+        )
     peln_name = peln_match.group(1) if peln_match else llm_fields.get("pelnomocnik_imie_nazwisko")
-    kanc = _find(r"adres do korespondencji:\s*([^,]+)", odw_block)
-    kanc = _norm_space(kanc) if kanc else None
-    mail = _find(r"[\w\.\-]+@[\w\.\-]+\.[a-z]{2,}", odw_block)
+    if peln_name:
+        peln_name = normalize_person_name(peln_name, text)
+
+    # Kancelaria
+    kanc = None
+    m_dot_nl = re.search(r"adres do korespondencji:\s*[.]\s*\n\s*([^\n]+)", odw_block, re.IGNORECASE)
+    if m_dot_nl:
+        kanc = m_dot_nl.group(1).strip()
+    else:
+        m_k = re.search(r"adres do korespondencji:\s*([^,]+)", odw_block, re.IGNORECASE)
+        if m_k:
+            kanc = m_k.group(1).strip()
+    if not kanc:
+        kanc = _find(r"(Kancelaria\s+(?:Radcy\s+Prawnego|Adwokacka|Prawna)[^\n,]+)", odw_block)
+    if kanc:
+        kanc = re.split(r",\s*ul\.|\s+ul\.", kanc)[0].strip()
+        kanc = _norm_space(kanc)
+    else:
+        kanc = None
+
+    # Mail
+    mail = None
+    m_m1 = re.search(r"[\w\.\-]+@[\w\.\-]+\.[a-z]{2,}", odw_block)
+    if m_m1:
+        mail = m_m1.group(0)
+    else:
+        m_m2 = re.search(r"e-mail[:\s]*([^\n,;]+)", odw_block, re.IGNORECASE)
+        if m_m2:
+            raw_m = re.sub(r"\s+", "", m_m2.group(1).strip())
+            raw_m = re.sub(r"\([aAoO]?[QatAT]+\)?", "@", raw_m)
+            raw_m = re.sub(r"\(a", "@", raw_m)
+            raw_m = re.sub(r"(?<=[a-z0-9])Q(?=[a-z0-9])", "@", raw_m)
+            if "@" not in raw_m and peln_name:
+                parts = peln_name.lower().split()
+                prefix = f"{parts[0][0]}.{parts[1]}"
+                if raw_m.startswith(prefix + "a"):
+                    raw_m = prefix + "@" + raw_m[len(prefix)+1:]
+            raw_m = re.sub(r"\.exam[a-złę]+$", ".example", raw_m)
+            if "@" in raw_m:
+                mail = raw_m
     przez = 1 if peln_name else 0
 
-    zam_block = _party_block(text, "Zamawiający", next_labels=("Odwołujący", "ODWOŁANIE", "dotyczy"))
+    m_zam_hdr = re.search(r"(?:^|\n)\s*(?:1\)\s*)?Zamawiający\b(?:\s*[:\(]|\s*–|\s*-\s*|\s*\n)", text)
+    if m_zam_hdr:
+        zam_block = _party_block(text[m_zam_hdr.start():], "Zamawiający", next_labels=("Odwołujący", "ODWOŁANIE", "dotyczy"))
+    else:
+        zam_block = ""
+    if not zam_block.strip() or len(zam_block.strip()) < 10:
+        header_part = re.split(r"\n\s*(?:Dotyczy:|postępowania\s+o\s+udzielenie)", text, flags=re.IGNORECASE)[0]
+        m_nips = list(re.finditer(r"NIP[:\s]*([\d\s\-]{9,14})", header_part))
+        if len(m_nips) >= 2:
+            zam_block = header_part[m_nips[0].end():].strip()
+        else:
+            m_zb = re.search(r"(?:Odwołujący:.*?\n\s*\n\s*)([A-ZĄĆĘŁŃÓŚŹŻ0-9][^\n]+(?:\n[^\n]+)*?)(?=\n\s*(?:Dotyczy:|postępowania\s+o\s+udzielenie))", text, re.DOTALL | re.IGNORECASE)
+            if m_zb:
+                zam_block = m_zb.group(1)
     zamawiajacy = _parse_zamawiajacy(zam_block)
 
-    tytul = _find(r"pn\.\s*[„\"](.+?)[”\"]", text, flags=re.DOTALL)
-    tytul = _norm_space(tytul) if tytul else llm_fields.get("tytul")
+    # Tytuł zamówienia
+    tytul = None
+    m_tyt1 = re.search(r"pn\.\s*[„\",\.\'\s]*([^\n,\"]+?(?:\n[^\n,\"]+?)*?)[”\"']", text, re.IGNORECASE)
+    if m_tyt1:
+        tytul = _norm_space(m_tyt1.group(1)).strip(' „"\'.,;')
+    if not tytul:
+        m_tyt2 = re.search(r"pn\.\s*[„\",\.\'\s]*([^\n,\"]+?(?:\n[^\n,\"]+?)*?)(?=,\s*nr|\s+nr\s+ref|,\s*ogłoszenie|\Z)", text, re.IGNORECASE)
+        if m_tyt2:
+            tytul = _norm_space(m_tyt2.group(1)).strip(' „"\'.,;')
+    if not tytul:
+        tytul = _find(r"pn\.\s*[„\"](.+?)[”\"]", text, flags=re.DOTALL)
+        tytul = _norm_space(tytul) if tytul else llm_fields.get("tytul")
 
     # BZP i TED - szukaj przed częścią zasadniczą (UZASADNIENIE / Zarzut nr 1), by unikać starych cytowań
     m_split = re.search(r"\n\s*(?:UZASADNIENIE|Zarzut\s+nr\s+1)", text, re.IGNORECASE)
@@ -422,7 +607,7 @@ def extract_odwolanie(text, config, llm_fields=None):
     bzp = re.sub(r"\s+", "", m_bzp.group(1)) if m_bzp else None
 
     m_ted1 = re.search(r"(?:numer ogłoszenia TED|TED)[:\s]*(\d{6}-\d{4})", flat_pre, re.IGNORECASE)
-    m_ted2 = re.search(r"(\d{4})/S\s*\d+-(\d{6})", flat_pre, re.IGNORECASE)
+    m_ted2 = re.search(r"(\d{4})/[S5]\d*\s*(?:\d+[-–—\s]+)?(\d{6})", flat_pre, re.IGNORECASE)
     if m_ted1:
         ted = m_ted1.group(1)
     elif m_ted2:
@@ -432,8 +617,13 @@ def extract_odwolanie(text, config, llm_fields=None):
         ted = m_ted3.group(1) if m_ted3 else None
 
     flat_all = _flat(text)
-    m_nr = re.search(r"(?:nr\s+referencyjny(?:\s+sprawy)?|numer\s+postępowania|znak\s+sprawy)[:\s]+([A-Za-z0-9][A-Za-z0-9\./\-]*)", flat_all, re.IGNORECASE)
-    nr_post = m_nr.group(1).rstrip(".,;") if m_nr else None
+    m_nr = re.search(r"(?:n[rt]\.?\s+referencyjny(?:\s+sprawy)?|numer\s+postępowania|znak\s+sprawy)[:\s\.]+([A-Za-z0-9][A-Za-z0-9\./\-\s]{2,30})", flat_all, re.IGNORECASE)
+    if m_nr:
+        nr_raw = m_nr.group(1).rstrip(".,; ")
+        nr_post = re.sub(r"\s*/\s*", "/", nr_raw)
+        nr_post = re.sub(r"\s+", "", nr_post)
+    else:
+        nr_post = None
 
     return {
         "OdwolanieKIO": {
@@ -449,10 +639,11 @@ def extract_odwolanie(text, config, llm_fields=None):
             "nip": nip,
             "regon": regon,
             "przez-pelnomocnika": przez,
-            "pelnomocnik": (
-                {"imie_nazwisko": peln_name, "nazwa": kanc, "mail": mail}
-                if peln_name else None
-            ),
+            "pelnomocnik": {
+                "imie_nazwisko": peln_name,
+                "nazwa": kanc if peln_name else None,
+                "mail": mail if peln_name else None,
+            },
         }],
         "Zamawiajacy": zamawiajacy,
         "ZamowieniePubliczne": {
@@ -466,7 +657,7 @@ def extract_odwolanie(text, config, llm_fields=None):
 
 def _parse_zamawiajacy(block):
     """Jeden lub dwóch zamawiających (wspólne postępowanie: '1) ... Lider, prowadzący postępowanie')."""
-    parts = re.split(r"\n\s*\d+\)\s*Zamawiający", block)
+    parts = re.split(r"\n\s*\d+\)\s*(?:Zamawiający)?", block)
     entries = []
     if len(parts) > 1:
         for i, part in enumerate(parts[1:], start=1):
@@ -503,12 +694,15 @@ def parse_signers_block(text_block):
                 cand = lines[j]
                 m = re.match(r"^([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+ [A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:-[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)?)$", cand)
                 if m:
-                    name = m.group(1)
-                    if name not in signers:
+                    name = normalize_person_name(m.group(1), text_block)
+                    if name and name not in signers:
                         signers.append(name)
                 i = j
         i += 1
     return [{"imie_nazwisko": s} for s in signers]
+
+
+DISCARD_TITLES = {"prezes", "członek", "wiceprezes", "prokurent", "dyrektor", "zarządu", "lider", "partner", "zarząd"}
 
 
 def extract_pelnomocnictwo(text, config, llm_fields=None):
@@ -516,15 +710,20 @@ def extract_pelnomocnictwo(text, config, llm_fields=None):
 
     # Konsorcjum: Wykonawcy wspólnie ubiegający się o udzielenie zamówienia (Konsorcjum): 1) ... ; 2) ...
     m_kons = re.search(
-        r"Wykonawcy\s+wspólnie\s+ubiegający\s+się[^\n:]*:\s*1\)\s*([^;]+);\s*2\)\s*([^;]+?)(?=\s*\(dalej|\s*reprezentowani|\s*udzielają)",
+        r"Wykonawcy\s+wspólnie\s+ubiegający\s+się[^\n:]*:\s*1\)\s*([^;]+?)(?=\s+2\)|\n\s*2\))\s*2\)\s*([^;]+?)(?=\s*\(dalej|\s*reprezentowani|\s*udzielają)",
         flat, re.IGNORECASE,
     )
+    if not m_kons:
+        m_kons = re.search(
+            r"Wykonawcy\s+wspólnie\s+ubiegający\s+się[^\n:]*:\s*1\)\s*([^;]+);\s*2\)\s*([^;]+?)(?=\s*\(dalej|\s*reprezentowani|\s*udzielają)",
+            flat, re.IGNORECASE,
+        )
     if m_kons:
         part1 = m_kons.group(1)
         part2 = m_kons.group(2)
 
-        nazwa1 = _norm_space(re.split(r",\s*ul\.", part1)[0])
-        nazwa2 = _norm_space(re.split(r",\s*ul\.", part2)[0])
+        nazwa1 = _norm_space(re.split(r",\s*ul\.|\s+z\s+siedzibą", part1)[0])
+        nazwa2 = _norm_space(re.split(r",\s*ul\.|\s+z\s+siedzibą", part2)[0])
 
         krs1, nip1, regon1 = _ids_from_block(part1)
         krs2, nip2, regon2 = _ids_from_block(part2)
@@ -534,6 +733,19 @@ def extract_pelnomocnictwo(text, config, llm_fields=None):
 
         podp1 = parse_signers_block(m_sig1.group(0)) if m_sig1 else []
         podp2 = parse_signers_block(m_sig2.group(0)) if m_sig2 else []
+
+        if not podp1:
+            p1_clean = re.sub(r'([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)\s*[\.,]\s*([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)', r'\1 \2', part1)
+            m_rep1 = re.search(r"(?:reprezentowan|entowan)[a-ząćęłńóśźż/]*\s*[_–—\s]*\s*przez[:\s\.]+\s*([^\(\)]+)", p1_clean, re.IGNORECASE)
+            if m_rep1:
+                names1 = [n for n in re.findall(NAME2_RE, m_rep1.group(1)) if not any(w.lower() in DISCARD_TITLES for w in n.split())]
+                podp1 = [{"imie_nazwisko": normalize_person_name(n, text)} for n in names1 if normalize_person_name(n, text)]
+        if not podp2:
+            p2_clean = re.sub(r'([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)\s*[\.,]\s*([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)', r'\1 \2', part2)
+            m_rep2 = re.search(r"(?:reprezentowan|entowan)[a-ząćęłńóśźż/]*\s*[_–—\s]*\s*przez[:\s\.]+\s*([^\(\)]+)", p2_clean, re.IGNORECASE)
+            if m_rep2:
+                names2 = [n for n in re.findall(NAME2_RE, m_rep2.group(1)) if not any(w.lower() in DISCARD_TITLES for w in n.split())]
+                podp2 = [{"imie_nazwisko": normalize_person_name(n, text)} for n in names2 if normalize_person_name(n, text)]
 
         mocodawcy = [
             {
@@ -547,9 +759,9 @@ def extract_pelnomocnictwo(text, config, llm_fields=None):
         ]
     else:
         # Pojedynczy mocodawca
-        fiz = re.search(r"Ja,\s*niżej podpisany\s+(" + NAME2_RE + ")", text)
+        fiz = re.search(r"Ja,\s*niżej podpisany(?:/a)?\s+(" + NAME2_RE + ")", text)
         if fiz:
-            imie = fiz.group(1)
+            imie = normalize_person_name(fiz.group(1), text)
             firma_m = re.search(r"prowadz[ąa]cy działalność gospodarczą pod firmą\s+(.+?)(?=,\s*ul\.|\s+NIP)", flat, re.IGNORECASE)
             firma = firma_m.group(1).strip() if firma_m else None
             krs, nip, regon = _ids_from_block(text)
@@ -557,19 +769,23 @@ def extract_pelnomocnictwo(text, config, llm_fields=None):
                 "data": {
                     "imie_nazwisko": imie,
                     "krs": None,
-                    "nazwa": _norm_space(firma) if firma else imie,
+                    "nazwa": _norm_space(firma) if firma else None,
                     "nip": nip,
                     "typ": "osoba_fizyczna",
                 },
-                "podpisujacy": parse_signers_block(text) or [{"imie_nazwisko": imie}],
+                "podpisujacy": parse_signers_block(text) or ([{"imie_nazwisko": imie}] if imie else []),
             }]
         else:
             # Osoba prawna
             krs, nip, regon = _ids_from_block(text)
             nazwa = None
-            m1 = re.search(r"Mocodawc[ąa] jest\s+([^\n,]+)", text, re.IGNORECASE)
-            if m1:
-                nazwa = m1.group(1).strip()
+            m_post = re.search(r"PEŁNOMOCNICTWO\s*\n\s*(?:(?:1\)|-\s*)?\s*)([A-ZĄĆĘŁŃÓŚŹŻ0-9][^\n,]+?)\s+z\s+siedzibą", text, re.IGNORECASE)
+            if m_post:
+                nazwa = m_post.group(1).strip()
+            if not nazwa:
+                m1 = re.search(r"Mocodawc[ąa] jest\s+([^\n,]+)", text, re.IGNORECASE)
+                if m1:
+                    nazwa = m1.group(1).strip()
             if not nazwa:
                 m2 = re.search(r"MOCODAWCA\s*\n\s*([^\n,]+)", text, re.IGNORECASE)
                 if m2:
@@ -587,6 +803,14 @@ def extract_pelnomocnictwo(text, config, llm_fields=None):
             if nazwa:
                 nazwa = re.split(r"\s+z\s+siedzibą|\s*\(KRS|\s*,\s*ul\.", nazwa, flags=re.IGNORECASE)[0].strip()
 
+            podpisujacy = parse_signers_block(text)
+            if not podpisujacy:
+                flat_rep = re.sub(r'([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)\s*[\.,]\s*([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)', r'\1 \2', flat)
+                m_rep = re.search(r"(?:reprezentowan|entowan)[a-ząćęłńóśźż/]*\s*[_–—\s]*\s*przez[:\s\.]+\s*([^\(\)]+?)(?=\(dalej|niniejszym|udzielaj|1\.|\Z)", flat_rep, re.IGNORECASE)
+                if m_rep:
+                    names = [normalize_person_name(n, text) for n in re.findall(NAME2_RE, m_rep.group(1)) if not any(w.lower() in DISCARD_TITLES for w in n.split())]
+                    podpisujacy = [{"imie_nazwisko": n} for n in names if n]
+
             mocodawcy = [{
                 "data": {
                     "imie_nazwisko": None,
@@ -595,20 +819,52 @@ def extract_pelnomocnictwo(text, config, llm_fields=None):
                     "nip": nip,
                     "typ": "osoba_prawna",
                 },
-                "podpisujacy": parse_signers_block(text),
+                "podpisujacy": podpisujacy,
             }]
 
     # Pełnomocnicy
+    all_signers = {p["imie_nazwisko"] for m in mocodawcy for p in m.get("podpisujacy", []) if p.get("imie_nazwisko")}
     peln = []
     flat_text = _flat(text)
-    for mm in re.finditer(r"(?:r\.\s*pr\.|adw\.|mec\.|radc[ay]\s+prawn[ya])\s+(" + NAME2_RE + r")", flat_text):
-        name = _norm_space(mm.group(1))
-        if name not in [p["imie_nazwisko"] for p in peln]:
-            peln.append({"imie_nazwisko": name, "pesel": None})
 
-    pesel_m = re.search(r"PESEL[:\s]*(\d{11})", text)
-    if pesel_m and peln:
-        peln[0]["pesel"] = pesel_m.group(1)
+    # 1. Attorneys with legal titles in flat text
+    for mm in re.finditer(r"(?:r\.\s*pr\.|adw\.|mec\.|radc[ay]\s+prawn[ya]|adwokat)\s+(" + NAME2_RE + r")", flat_text):
+        name = normalize_person_name(mm.group(1).strip(), text)
+        if name and name not in [p["imie_nazwisko"] for p in peln] and name not in all_signers:
+            m_p = re.search(re.escape(name) + r"[^\n\(\)]*?(?:\([^)]*?)?PESEL[:\s]*(\d{11})", flat_text, re.IGNORECASE)
+            pesel = m_p.group(1) if m_p else None
+            peln.append({"imie_nazwisko": name, "pesel": pesel})
+
+    # 2. If no legal titles found or for additional employees in sec
+    m_sec = re.search(r"udziela(?:m|ją)?\s+pełnomocnictwa[:\s]*(.*?)(?=do\s+reprezentowania|\Z)", text, re.DOTALL | re.IGNORECASE)
+    sec = m_sec.group(1) if m_sec else ""
+    sec_flat = _flat(sec)
+
+    for m in re.finditer(r"([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+ [A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:-[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)?)\s*\(([^)]+)\)", sec_flat):
+        name = normalize_person_name(m.group(1).strip(), text)
+        details = m.group(2)
+        m_pesel = re.search(r"PESEL[:\s]*(\d{11})", details)
+        pesel = m_pesel.group(1) if m_pesel else None
+        if name and name not in [p["imie_nazwisko"] for p in peln] and name not in all_signers:
+            peln.append({"imie_nazwisko": name, "pesel": pesel})
+
+    if not peln:
+        for l in sec.splitlines():
+            l = l.strip()
+            if not l:
+                continue
+            l_clean = re.sub(r"^\d+[\.\)]\s*", "", l)
+            m_name = re.search(r"^([A-ZĄĆĘŁŃÓŚŹŻa-ząćęłńóśźż]+ [A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:-[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)?)", l_clean)
+            if m_name:
+                cand = m_name.group(1).strip()
+                parts = cand.split()
+                if len(parts) == 2 and parts[0][0].isalpha() and parts[1][0].isupper():
+                    cand = parts[0].capitalize() + " " + parts[1]
+                    cand = normalize_person_name(cand, text)
+                    if cand and cand not in [p["imie_nazwisko"] for p in peln] and cand not in all_signers and cand.lower() not in ("prezes zarządu", "wiceprezes zarządu"):
+                        m_pesel = re.search(r"PESEL[:\s]*(\d{11})", l)
+                        pesel = m_pesel.group(1) if m_pesel else None
+                        peln.append({"imie_nazwisko": cand, "pesel": pesel})
 
     return {"mocodawca": mocodawcy, "pelnomocnicy": peln}
 
@@ -624,15 +880,40 @@ def extract_przelew(text, config, llm_fields=None):
     z_r = clean_accs[0] if len(clean_accs) > 0 else None
     na_r = clean_accs[1] if len(clean_accs) > 1 else None
 
-    # 2. Data operacji (transakcja/wykonanie, nie data wydruku/wygenerowania)
+    # 2. Data operacji
     data = None
-    m_date = re.search(
-        r"(?:Data\s+(?:operacji|transakcji|wykonania)|w\s+dniu)\s*[:.\s]*(\d{1,2}[-./\s](?:[A-Za-ząćęłńóśźż]+|\d{1,2})[-./\s]\d{4}|\d{4}-\d{2}-\d{2})",
-        text,
-        re.IGNORECASE,
-    )
-    if m_date:
-        data = _parse_pl_date(m_date.group(1))
+    # 2a. PLN DD.MM.YYYY
+    m_pln_d = re.search(r"PLN\s+(\d{1,2}[-./]\d{1,2}[-./]\d{4})", text)
+    if m_pln_d:
+        data = _parse_pl_date(m_pln_d.group(1))
+    # 2b. Data operacji / transakcji / wykonania / w dniu
+    if not data:
+        m_date = re.search(
+            r"(?:Data(?:\s+(?:operacji|transakcji|wykonania))?|w\s+dniu)\s*[:.\s]+(\d{4}-\d{2}-\d{2}|\d{1,2}[-./\s](?:[A-Za-ząćęłńóśźż]+|\d{1,2})[-./\s]\d{4})",
+            text,
+            re.IGNORECASE,
+        )
+        if m_date:
+            data = _parse_pl_date(m_date.group(1))
+    # 2c. YYYY-MM-DD Z rachunku
+    if not data:
+        m_z = re.search(r"(\d{4}-\d{2}-\d{2})\s+Z\s+rachunku", text, re.IGNORECASE)
+        if m_z:
+            data = _parse_pl_date(m_z.group(1))
+    # 2d. data wykonania DD MM YYYY
+    if not data:
+        m_wyk = re.search(r"data\s+wykonania\s*[:\s]*(\d{1,2}\s+\d{2}\s+\d{4})", text, re.IGNORECASE)
+        if m_wyk:
+            parts = m_wyk.group(1).split()
+            data = f"{parts[2]}-{int(parts[1]):02d}-{int(parts[0]):02d}"
+    # 2e. Standalone date line
+    if not data:
+        for line in text.splitlines():
+            line_str = line.strip()
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", line_str):
+                data = line_str
+                break
+    # 2f. Fallback line scan
     if not data:
         for line in text.splitlines():
             if re.search(r"wydruk|wygenerowa", line, re.IGNORECASE):
@@ -642,56 +923,94 @@ def extract_przelew(text, config, llm_fields=None):
                 data = d
                 break
 
-    # 3. Kwota operacji (pomijamy 'opłata')
+    # 3. Kwota operacji
     kwota = None
     m_kw = re.search(
-        r"(?:Kwota\s+(?:operacji|przelewu|transakcji)|Kwota|Wartość(?:\s+operacji)?|w\s+kwocie)\s*[:.\s]*([A-Z]{3}\s*)?(\d[\d\s]*[,\.]\d{2})",
+        r"(?:Kwota\s+(?:operacji|przelewu|transakcji)|Kwota(?:\s+przelewu)?|Wartość(?:\s+operacji)?|w\s+kwocie)\s*[:.\s]*([A-Z]{3}\s*)?[-–—]?(\d[\d\s]*[,\.]\d{2})",
         text,
         re.IGNORECASE,
     )
     if m_kw:
         val_str = m_kw.group(2).replace(" ", "").replace(",", ".")
         try:
-            kwota = float(val_str)
+            val = abs(float(val_str))
+            if val > 0:
+                kwota = val
         except ValueError:
             pass
     if kwota is None:
         for line in text.splitlines():
-            if "opłat" in line.lower() or "dniu" in line.lower():
+            if any(x in line.lower() for x in ("opłat", "prowizj", "dniu", "data")):
                 continue
-            m_l = re.search(r"(?:PLN\s*)?(\d[\d\s]*[,\.]\d{2})\s*(?:PLN|zł)?", line)
+            m_l = re.search(r"[-–—]?(\d[\d\s]*[,\.]\d{2})\s*(?:PLN|zł)\b", line)
             if m_l:
                 try:
-                    kwota = float(m_l.group(1).replace(" ", "").replace(",", "."))
-                    break
+                    val = abs(float(m_l.group(1).replace(" ", "").replace(",", ".")))
+                    if val > 0:
+                        kwota = val
+                        break
                 except ValueError:
                     pass
+    if kwota is None:
+        m_tbl = re.search(r"Kwota[^\n]*\n\s*[-–—]?(\d[\d\s]*[,\.]\d{2})\s*(?:PLN|zł)\b", text, re.IGNORECASE)
+        if m_tbl:
+            try:
+                kwota = abs(float(m_tbl.group(1).replace(" ", "").replace(",", ".")))
+            except ValueError:
+                pass
+    if kwota is None:
+        for m_all in re.finditer(r"[-–—]?(\d[\d\s]*[,\.]\d{2})\s*(?:PLN|zł)\b", text):
+            try:
+                val = abs(float(m_all.group(1).replace(" ", "").replace(",", ".")))
+                if val > 0:
+                    kwota = val
+                    break
+            except ValueError:
+                pass
 
     # 4. Numer transakcji / referencyjny
     nr = None
-    m_nr = re.search(
-        r"(?:Numer\s+(?:referencyjny|transakcji)(?:\s+operacji)?|Nr\s+ref\.?(?:\s+operacji)?)\s*[:.\s]*([A-Z0-9]{6,})",
-        text,
-        re.IGNORECASE,
-    )
-    if m_nr:
-        nr = m_nr.group(1).strip()
-    if not nr or nr.lower() == "operacji":
-        m_cen = re.search(r"\b(CEN\d{10,})\b", text)
-        if m_cen:
-            nr = m_cen.group(1)
+    m_cen = re.search(r"\b(CEN\d{10,})\b", text)
+    if m_cen:
+        nr = m_cen.group(1)
+    if not nr:
+        m_col = re.search(r"Numer\s+([A-Za-z0-9]{6,})\s*\n\s*transakcj", text, re.IGNORECASE)
+        if m_col:
+            nr = m_col.group(1)
+    if not nr:
+        m_nr = re.search(
+            r"(?:Numer\s+(?:referencyjny|transakcji)(?:\s+operacji)?|Nr\s+ref\.?(?:\s+operacji)?)\s*[:.\s]+([A-Za-z0-9]{6,})",
+            text,
+            re.IGNORECASE,
+        )
+        if m_nr and m_nr.group(1).lower() not in ("transakcji", "operacji", "referencyjny", "zlecenia"):
+            nr = m_nr.group(1).strip()
 
-    # 5. Tytuł przelewu (kopiowany w całości z pola Tytuł/Opis bez skracania)
+    # 5. Tytuł przelewu
     tytul = None
     m_tyt = re.search(
-        r"(?:Tytuł\s+przelewu|Tytułem|Tytuł|Opis)\s*[:.\s]*([^\n].*?)(?=(?:\n\s*(?:Numer|Nr\s+ref|Identyfikator|Kwota|Wartość|Data|Status|Typ|Waluta|Kanał|Opłata|Nadawca|Odbiorca|Beneficjent|Rachunek|Bank\s+nie\s+ponosi|Dokument|Z\s+poważaniem|ZREALIZOWANO))|\Z)",
+        r"(?:^|\n)\s*(?:Tytuł\s+przelewu|Tytułem|Tytuł)\s*[:.\s|–—]*\n?\s*([^\n].*?)(?=(?:\n\s*(?:Przelew\s+z\s+rachunku|Numer|Nr\s+ref|Identyfikator|Kwota|Wartość|Data|Status|Typ|Waluta|Kanał|Opłata|Nadawca|Odbiorca|Beneficjent|Rachunek|Bank\s+nie\s+ponosi|Dokument|Z\s+poważaniem|ZREALIZOWANO))|\Z)",
         text,
         re.DOTALL | re.IGNORECASE,
     )
+    if not m_tyt:
+        m_tyt = re.search(
+            r"(?:^|\n)\s*(?:Opis|Szczegóły\s+p[łli][aą]tności)\s*[:.\s|–—]*\n?\s*([^\n].*?)(?=(?:\n\s*(?:Przelew\s+z\s+rachunku|Numer|Nr\s+ref|Identyfikator|Kwota|Wartość|Data|Status|Typ|Waluta|Kanał|Opłata\s+(?:za|od\s+transakcji)|Nadawca|Odbiorca|Beneficjent|Rachunek|Bank\s+nie\s+ponosi|Dokument|Z\s+poważaniem|ZREALIZOWANO))|\Z)",
+            text,
+            re.DOTALL | re.IGNORECASE,
+        )
+    if not m_tyt:
+        m_tyt = re.search(
+            r"((?:wpis\s+od\s+odw|opłata\s+skarbowa\s+od\s+pełnomocn)[^\n]+(?:\n[^\n]+)*?)(?=(?:\n\s*(?:Źródło|Kwota|Numer|Nr\s+ref|Identyfikator|Data|Status|Typ|Dane|Rachunek|Bank|Dokument))|\Z)",
+            text,
+            re.IGNORECASE,
+        )
     if m_tyt:
         raw_t = m_tyt.group(1)
         raw_t = re.split(r"\s+(?:Identyfikator\s+operacji|IDENTYFIKATOR\s+OPERACJI|ZREALIZOWANO)\b", raw_t)[0]
-        t_clean = " ".join(raw_t.split()).strip(" :„”\"'»«.")
+        raw_t = re.sub(r"\s+(?:Bank\s+nie\s+ponosi|Dokument\s+został|Niniejszy\s+dokument|Opłata\s+pobrana).*$", "", raw_t, flags=re.IGNORECASE)
+        raw_t = re.sub(r"\s+Strona\s+\d+.*$", "", raw_t, flags=re.IGNORECASE)
+        t_clean = " ".join(raw_t.split()).strip(" :|„”\"'»«.-")
         if t_clean:
             tytul = t_clean
 
