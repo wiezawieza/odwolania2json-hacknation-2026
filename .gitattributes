@@ -1,0 +1,4 @@
+# Skrypty i pliki Dockera zawsze z LF (uruchamiane na Linuxie / w kontenerze)
+*.sh text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf

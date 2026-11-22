@@ -15,11 +15,14 @@ __pycache__/
 *.so
 
 # Data and output folders
-output/
+# input/ i output/ muszą istnieć w katalogu głównym (wymóg UZP) — w repo tylko .gitkeep
+output/*
+!output/.gitkeep
 output_*/
 output_test/
 output_eval/
-input/
+input/*
+!input/.gitkeep
 input_*/
 
 # Upstream training repository

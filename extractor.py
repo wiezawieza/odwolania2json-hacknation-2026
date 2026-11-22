@@ -92,7 +92,10 @@ def _ocr_pages(pdf_path, pages):
     used = False
     new_pages = list(pages)
     cache_dir = os.path.join(os.path.dirname(__file__), ".cache_ocr")
-    os.makedirs(cache_dir, exist_ok=True)
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+    except OSError:
+        pass  # katalog aplikacji bez prawa zapisu: OCR działa dalej, tylko bez cache
     mtime = os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0
     try:  # drugi klucz cache: treść pliku (ten sam skan wgrany w GUI / przeniesiony folder)
         with open(pdf_path, "rb") as fh:
@@ -138,6 +141,18 @@ def _ocr_pages(pdf_path, pages):
         except Exception:
             continue
     return new_pages, used
+
+
+def ocr_engine():
+    """Wersja silnika OCR do raportu (np. 'tesseract 5.5.0') albo None, gdy Tesseracta brak."""
+    try:
+        import pytesseract
+        tess_win = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        if os.path.exists(tess_win):
+            pytesseract.pytesseract.tesseract_cmd = tess_win
+        return f"tesseract {pytesseract.get_tesseract_version()}"
+    except Exception:
+        return None
 
 
 def extract_pages(pdf_path):
@@ -464,8 +479,10 @@ CZYNNOSC_RULES = [
 # ---------------------------------------------------------------- odwołanie
 def _czynnosc(text, config):
     """Powód TYLKO z pierwszego zarzutu lub zaskarżonej czynności przed Zarzutem 1."""
-    # 0. Wprost pod 'wnoszę odwołanie wobec: ... 1. ...'
-    m_wn = re.search(r"wnoszę\s+odwołanie\s+wobec:?[\s\S]{0,500}?(?:^|\n)\s*[1I|l]\.?\s*([^\n;]+)", text, re.IGNORECASE)
+    # 0. Wprost pod 'wnoszę odwołanie wobec: ... 1. ...'. Warianty OCR numeru „1.”: I, |, l oraz „4”
+    #    bez kropki przed słowem pisanym małą literą (Tesseract 5.5 czyta „1. czynności” jako „4 czynności”).
+    m_wn = re.search(r"wnoszę\s+odwołanie\s+wobec:?[\s\S]{0,500}?(?:^|\n)\s*(?:[1I|l]\.?|4(?=\s+(?-i:[a-ząćęłńóśźż])))\s*([^\n;]+)",
+                     text, re.IGNORECASE)
     if m_wn:
         wn_text = m_wn.group(1).lower()
         for cid, patterns in CZYNNOSC_RULES:
@@ -677,7 +694,8 @@ def extract_odwolanie(text, config, llm_fields=None):
     bzp = re.sub(r"\s+", "", m_bzp.group(1)) if m_bzp else None
 
     m_ted1 = re.search(r"(?:numer ogłoszenia TED|TED)[:\s]*(\d{6}-\d{4})", flat_pre, re.IGNORECASE)
-    m_ted2 = re.search(r"(\d{4})/[S5]\d*\s*(?:\d+[-–—\s]+)?(\d{6})", flat_pre, re.IGNORECASE)
+    # Seria „S” w numerze Dz.U. UE (RRRR/S NNN-NNNNNN); OCR czyta „S” także jako „5” lub „8”.
+    m_ted2 = re.search(r"(\d{4})/[S58]\d*\s*(?:\d+[-–—\s]+)?(\d{6})", flat_pre, re.IGNORECASE)
     if m_ted1:
         ted = m_ted1.group(1)
     elif m_ted2:
@@ -934,7 +952,23 @@ def extract_pelnomocnictwo(text, config, llm_fields=None):
 
 
 # ---------------------------------------------------------------- przelew
-IBAN_RE = r"(?:PL\s*)?(\d{2}(?:[\s-]*\d{4}){6}|\d{26})"
+# Numer rachunku (UZP, Discord 21:17 i 23:00): zapis DOKŁADNIE jak w dokumencie, usuwane są wyłącznie
+# białe znaki. Prefiks kraju zostaje: „PL05 4706 …” -> „PL0547…”, numer bez prefiksu -> same cyfry,
+# inny kod kraju IBAN też zostaje. Prefiks = 2 wielkie litery kodu kraju IBAN tuż przed numerem, w tej
+# samej linii, niebędące końcówką słowa („GDAŃSK\n60 1010 …” to nie prefiks „SK”).
+IBAN_COUNTRIES = frozenset(
+    "AD AE AL AT AZ BA BE BG BH BI BR BY CH CR CY CZ DE DJ DK DO EE EG ES FI FK FO FR GB GE GI GL GR GT "
+    "HN HR HU IE IL IQ IS IT JO KW KZ LB LC LI LT LU LV LY MC MD ME MK MN MR MT MU NI NL NO OM PK PL PS "
+    "PT QA RO RS RU SA SC SD SE SI SK SM SO ST SV TL TN TR UA VA VG XK YE".split())
+IBAN_RE = re.compile(r"(?:(?<![^\W\d_])([A-Z]{2})[ \t]*)?(\d{2}(?:[\s-]*\d{4}){6}|\d{26})")
+
+
+def _account(m):
+    """Trafienie IBAN_RE -> numer rachunku jak w dokumencie, bez białych znaków (z prefiksem kraju)."""
+    cc = m.group(1) if m.group(1) in IBAN_COUNTRIES else ""
+    return cc + re.sub(r"\s+", "", m.group(2))
+
+
 # Kwota z groszami: "7 500,00", "7500.00", "7.500,00", "1,234.56" (separator tysięcy . lub ,).
 # (?!\d)(?![.,]\d) — grosze muszą się kończyć: "7.500,00" to nie 7,50, a "12.03.2026" to nie kwota.
 AMT_RE = r"(\d[\d\s]*(?:[.,]\d{3})*[,.]\d{2})(?!\d)(?![.,]\d)"
@@ -975,8 +1009,8 @@ def _acc_role(text, start, floor=0):
 
 def extract_przelew(text, config, llm_fields=None):
     # 1. Rachunki (z_rachunku = nadawca, na_rachunek = odbiorca)
-    acc_m = [m for m in re.finditer(IBAN_RE, text, re.IGNORECASE) if len(re.sub(r"\D", "", m.group(1))) == 26]
-    clean_accs = [re.sub(r"\D", "", m.group(1)) for m in acc_m]
+    acc_m = [m for m in IBAN_RE.finditer(text) if len(re.sub(r"\D", "", m.group(2))) == 26]
+    clean_accs = [_account(m) for m in acc_m]
     z_r = clean_accs[0] if len(clean_accs) > 0 else None
     na_r = clean_accs[1] if len(clean_accs) > 1 else None
     # Domyślnie pierwszy rachunek = nadawca. Zamiana TYLKO, gdy etykiety wprost mówią odwrotnie.

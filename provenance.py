@@ -49,8 +49,8 @@ NOTES = {
     "tytul": "tytuł z dokumentu (np. w cudzysłowie po „pn.” / pole „Tytuł”)",
     "mail": "adres e-mail w bloku strony",
     "kwota": "kwota z groszami przy etykiecie „Kwota”",
-    "z_rachunku": "IBAN (26 cyfr) nadawcy",
-    "na_rachunek": "IBAN (26 cyfr) odbiorcy",
+    "z_rachunku": "rachunek nadawcy (26 cyfr) jak w dokumencie — z prefiksem kraju (np. PL), jeśli jest",
+    "na_rachunek": "rachunek odbiorcy (26 cyfr) jak w dokumencie — z prefiksem kraju (np. PL), jeśli jest",
     "numer_transakcji": "identyfikator transakcji / numer referencyjny",
     "data_operacji": "data operacji / wykonania przelewu",
     "imie_nazwisko": "imię i nazwisko w mianowniku (blok podpisu, lista pełnomocników)",
@@ -182,6 +182,10 @@ def _locate(path, leaf, value, pages, flat, config, rule=None):
         return None, None
     v = value
     kind = (rule or {}).get("rule")
+    if leaf in ("z_rachunku", "na_rachunek") and isinstance(v, str):
+        cc = re.match(r"[A-Z]{2}", v)  # prefiks kraju z dokumentu (PL…) — podświetlany razem z numerem
+        digits = _digits_pattern(re.sub(r"\D", "", v))
+        return _search(pages, [re.escape(cc.group(0)) + r"[ \t]*" + digits if cc else None, digits]), None
     if leaf in ("nip", "krs", "regon", "pesel", "z_rachunku", "na_rachunek") or kind == "party_id":
         return _search(pages, [_digits_pattern(re.sub(r"\D", "", str(v)))]), None
     if isinstance(v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):

@@ -6,7 +6,7 @@ Projekt realizuje zadanie automatycznej analizy i ekstrakcji informacji z akt sp
 
 ---
 
-## 🏆 Wyniki ewaluacji F1 (210 dokumentów: 60 spraw treningowych + 30 skanów UZP)
+## 🏆 Wyniki ewaluacji F1 (210 dokumentów: 60 spraw treningowych + 30 skanów UZP) — w środowisku jury (Docker)
 
 Wynik mierzony oficjalnym skryptem `evaluate.py` zgodnie z definicją metryki UZP:
 - **TP (True Positive):** wartość zgodna z ground truth (dla długich stringów: podobieństwo `difflib.SequenceMatcher >= 0.80`).
@@ -15,19 +15,30 @@ Wynik mierzony oficjalnym skryptem `evaluate.py` zgodnie z definicją metryki UZ
 - **FN (False Negative):** brak wartości w predykcji, gdy występuje w referencji.
 - **Wskaźnik F1:** \( F1 = \frac{2 \cdot TP}{2 \cdot TP + FP + FN} \)
 
-Szczegółowy raport znajduje się w pliku [EVAL.md](EVAL.md):
+Wynik w środowisku, w którym uruchamia nas jury: obraz Docker z [RUN.md](RUN.md), Linux, Tesseract 5.5.0 z Debiana. Szczegółowy raport jest w [EVAL.md](EVAL.md).
 
-| Zbiór danych | Typy dokumentów | Liczba dok. | TP | TN | FP | FN | F1 Score |
-|---|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Tekstowe PDF (60 spraw)** | Odwołanie, Pełnomocnictwo, Przelew | 180 | 2032 | 284 | 0 | 0 | **1,0000 (100%)** |
-| **Skany syntetyczne (OCR)** | Odwołanie, Pełnomocnictwo, Przelew | 30 | 309 | 79 | 0 | 0 | **1,0000 (100%)** |
-| **ŁĄCZNIE (Wszystkie zbiory)** | **Pełny zestaw referencyjny UZP** | **210** | **2341** | **363** | **0** | **0** | **1,0000 (100%)** |
+| Zbiór danych | Liczba dok. | TP | TN | FP | FN | F1 |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **PDF-y tekstowe (60 spraw: odwołanie, pełnomocnictwo, przelew)** | 180 | 2032 | 284 | 0 | 0 | **1,0000** |
+| **Skany (OCR), Docker / Tesseract 5.5.0** | 30 | 308 | 78 | 2 | 1 | **0,9952** |
+| **ŁĄCZNIE, Docker / Tesseract 5.5.0** | **210** | **2340** | **362** | **2** | **1** | **0,9994** |
+| *dla porównania: skany na Windows / Tesseract 5.4.0* | *30* | *309* | *79* | *0* | *0* | *1,0000* |
 
-### Wyniki per typ dokumentu (na całym zbiorze 210 dokumentów):
-- **Odwołanie (70 dokumentów):** F1 = **1,0000** (TP=1391, TN=169, FP=0, FN=0)
+**Skąd różnica na skanach: wersja silnika OCR, nie ekstrakcja.** Reguły, model języka `pol.traineddata` (sha256 `c4476cdb…`) i Leptonica 1.84.1 są w obu środowiskach identyczne. Tesseract 5.5.0 (Docker) i 5.4.0 (Windows) dają jednak identyczny tekst tylko na 8 z 79 stron skanów, bo różnią się drobnymi znakami. Wcześniej, gdy reguły znały tylko warianty z 5.4.0, wynik w Dockerze wynosił: skany 0,9871, łącznie 0,9983 (5 pól w 3 skanach). Dodaliśmy dwie małe normalizacje wariantów OCR, bez zmiany Tesseracta. Na Tesseracie 5.4.0 nie zmieniają żadnego wyniku:
+- skan odwołania 0004, `czynnosc_powod_id` i `czynnosc_opis`: numer „1.” na liście pod „wnoszę odwołanie wobec:” odczytany jako „4” (oczekiwane 9 „Decyzja o unieważnieniu postępowania”, było 1). **Naprawione.**
+- skan odwołania 0007, `numer_ted`: seria „S” numeru Dz.U. UE odczytana jako „8” (`2026/85` zamiast `2026/S5`; oczekiwane `706707-2026`, było `null`). **Naprawione.**
+- skan odwołania 0005, `Zamawiajacy[0].nazwa` (oczekiwane „Regionalne Centrum Zdrowia Publicznego w Dębnicy Górnej”, otrzymane „reprezentowany przez pełnomocnika:”) i `Zamawiajacy[0].regon` (oczekiwane `null`, otrzymane `999749508`, czyli REGON odwołującego). Tesseract 5.5.0 w ogóle nie odczytuje tu linii „Zamawiający:”, więc blok zamawiającego nie zostaje znaleziony. W tekście OCR brakuje etykiety, więc normalizacja nic tu nie da. **Zostaje** (2 FP + 1 FN).
+
+Sprawdziliśmy też Tesseract 5.3.4 z Ubuntu 24.04: wynik identyczny jak na 5.5.0 (skany 0,9952), więc obraz zostaje przy 5.5.0 z Debiana. Pełna lista błędów i podział tekst/skan: [EVAL.md](EVAL.md).
+
+### Wyniki per typ dokumentu (Docker / Tesseract 5.5.0, 210 dokumentów):
+- **Odwołanie (70 dokumentów):** F1 = **0,9989** (TP=1390, TN=168, FP=2, FN=1); wszystkie 3 błędy to skan 0005 opisany wyżej
 - **Pełnomocnictwo (70 dokumentów):** F1 = **1,0000** (TP=536, TN=188, FP=0, FN=0)
 - **Przelew bankowy (70 dokumentów):** F1 = **1,0000** (TP=414, TN=6, FP=0, FN=0)
 - **Dokumenty negatywne (16 PDF-ów bez ground truth, w tym postanowienie KIO):** 16/16 → pusty JSON `{}` (raportowane osobno przez `evaluate.py`).
+- **Zgłoszenie przystąpienia (4. typ, tylko konfiguracja):** F1 = **1,0000** (3 przykłady, 25 pól).
+
+> **Rachunki bankowe z prefiksem `PL` — znany błąd wzorców UZP.** Zgodnie z odpowiedziami UZP (Discord 21:17 i 23:00) numer rachunku zapisujemy dokładnie jak w dokumencie, usuwając tylko białe znaki: `PL05 4706 8028 …` → `PL0547068028…` (bez prefiksu w dokumencie → same cyfry). W 48 z 60 tekstowych potwierdzeń przelewu dokument zawiera `PL`, a wzorcowe JSON-y UZP go nie mają (96 pól `z_rachunku` / `na_rachunek`). To znany błąd wzorców, więc poprawki nie cofamy. Tam, gdzie wzorzec UZP ma `PL` (skany 0001 i 0006), wynik zgadza się co do znaku. Prefiks nie zmienia F1 wg definicji UZP, bo numer z prefiksem ma podobieństwo 0,963 ≥ 0,80 do wzorca bez prefiksu. Przy ścisłym porównaniu te 96 pól różniłoby się wyłącznie brakującym `PL` we wzorcu. Rozbicie liczy `evaluate.py`, wynik jest w [EVAL.md](EVAL.md).
 
 > Wynik jest w pełni deterministyczny: na zbiorze treningowym LLM nie jest wywoływany ani razu (reguły wypełniają wszystkie pola; sprawdzone uruchomieniem z niedostępnym endpointem API).
 
@@ -39,9 +50,20 @@ Szczegółowy raport znajduje się w pliku [EVAL.md](EVAL.md):
 
 ## 🚀 Szybki start i uruchomienie
 
+### Uruchomienie na VM ewaluacyjnej — jedna komenda
+
+```bash
+bash /opt/solution/run.sh
+```
+
+Przetwarza `/opt/solution/input` → `/opt/solution/output` w Dockerze (Python 3.13 + Tesseract `pol` w obrazie; na VM jest Python 3.12 i nie ma Tesseracta). Komenda działa bez interakcji i kończy się sama. Przygotowanie VM, klucz API, GUI i wariant bez Dockera opisuje [RUN.md](RUN.md).
+
+- **Klucz API Mistral** trafia wyłącznie do `/opt/solution/.env` **na serwerze**, nigdy do repozytorium (`.env` jest w `.gitignore` i `.dockerignore`).
+- **Bez klucza** aplikacja działa w pełni w trybie deterministycznym. Na zbiorze treningowym wynik jest identyczny, bo LLM nie jest wywoływany ani razu.
+
 ### Wymagania
-- **Python 3.13+**
-- Opcjonalnie: Tesseract OCR z pakietem języka polskiego (`tesseract-ocr-pol`) dla skanów bez warstwy tekstowej.
+- **Python 3.13+** (wymóg UZP; obraz Docker ma 3.13). Kod jest sprawdzony także na **Pythonie 3.12**, wersji z VM ewaluacyjnej.
+- Tesseract OCR z językiem polskim (`tesseract-ocr-pol`) dla skanów bez warstwy tekstowej (w obrazie Docker jest). Bez Tesseracta aplikacja się nie wysypuje: PDF-y tekstowe działają normalnie, a skan dostaje `{}` i status `ERR` w raporcie.
 
 ### Instalacja
 
@@ -72,7 +94,7 @@ Zawartość `.env`:
 LLM_API_KEY=twoj_klucz_mistral
 # LLM_MODEL=ministral-3b-2512   # domyślny, przypięty model (≤8B); nie używać aliasów -latest
 ```
-*Aplikacja działa w pełni autonomicznie również bez podanego klucza (fallback na reguły deterministyczne).*
+*Aplikacja działa w pełni autonomicznie również bez podanego klucza (fallback na reguły deterministyczne).* Na VM ewaluacyjnej plik `.env` z kluczem tworzymy tylko na serwerze (`/opt/solution/.env`, patrz [RUN.md](RUN.md)). Prawdziwy klucz nigdy nie trafia do repozytorium.
 
 ### Uruchomienie CLI (przetwarzanie wsadowe)
 
@@ -91,22 +113,35 @@ python app.py input output --no-llm
 
 ### Zmierzony czas przetwarzania
 
-Pełny zbiór treningowy (226 PDF-ów: 210 z ground truth + 16 negatywów), **cache OCR wyczyszczony** (każdy skan OCR-owany od zera), tryb domyślny, laptop Intel Core i7-6700HQ (4 rdzenie, 2016), 16 GB RAM, Tesseract `pol`. Wynik z raportu wsadowego (`czas_s` każdego dokumentu):
+**210 dokumentów treningowych (180 PDF-ów tekstowych + 30 skanów) — łącznie 320 s (5 min 20 s).** Cały katalog `dane` razem z 16 negatywami (226 PDF-ów) — 377 s. Pomiar z 22.11.2026: cache OCR wyczyszczony (każdy skan OCR-owany od zera), tryb domyślny, laptop Intel Core i7-6700HQ (4 rdzenie / 8 wątków, 2016), 16 GB RAM, Windows, Tesseract 5.4 `pol`. W tym przebiegu F1 = 1,0000, negatywy 16/16, 0 wywołań LLM. Wynik pochodzi z raportu wsadowego (`czas_s` każdego dokumentu):
 
-| Rodzaj dokumentu | Liczba | Średnio | Mediana | Maks. | Na stronę |
-|---|:---:|:---:|:---:|:---:|:---:|
-| PDF tekstowy | 184 | **0,010 s** | 0,006 s | 0,14 s | < 0,01 s |
-| Skan (OCR Tesseract) | 33 | **8,9 s** | 2,8 s | 30,4 s | 3,7 s |
-| Cały zbiór (226) | 226 | 1,3 s | — | — | — |
+| Rodzaj dokumentu (210 z wzorcem UZP) | Liczba | Łącznie | Średnio | Mediana | 90. percentyl | Maks. |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| PDF tekstowy | 180 | 3,4 s | **0,019 s** | 0,011 s | 0,06 s | 0,35 s |
+| Skan (OCR Tesseract, 72 strony) | 30 | 316,6 s | **10,6 s** | 2,8 s | 30,7 s | 36,9 s |
+| **Razem** | **210** | **320,0 s** | 1,5 s | 0,012 s | 2,4 s | 36,9 s |
 
-Łącznie 295 s; F1 w tym przebiegu = 1,0000, negatywy 16/16. Czas skanu zależy głównie od liczby stron (OCR ok. 3,7 s/stronę). Ponowne przetworzenie tego samego skanu korzysta z cache OCR (`.cache_ocr/`, klucz: treść pliku) — ok. 0,03 s.
+Czas skanu zależy od liczby stron: ok. 4,4 s na stronę, średnio 2,4 strony na skan. Wcześniejszy przebieg na tym samym laptopie dał 8,9 s na skan (rozrzut między przebiegami). Ponowne przetworzenie tego samego skanu korzysta z cache OCR (`.cache_ocr/`, klucz: treść pliku) i trwa ok. 0,03 s.
+
+**Pomiar na 2 rdzeniach (jak VM: 2 vCPU).** Obraz Docker z RUN.md przypięty do 2 fizycznych rdzeni tego samego laptopa (`--cpuset-cpus`), nic innego nie działało, OCR od zera. 12 skanów (po 4 odwołania, pełnomocnictwa i potwierdzenia, 28 stron) trwało 403 s, czyli **33,6 s na skan i 14,4 s na stronę**. To ok. 3 razy wolniej niż na 8 wątkach, bo Tesseract dzieli pracę na wszystkie dostępne rdzenie. Gęsta strona odwołania zajmuje ok. 17 s, krótkie potwierdzenie przelewu ok. 6 s. Sam OCR tych samych 12 stron: 5,7 s/stronę na 2 rdzeniach, 6,4 s na 1 rdzeniu z 2 wątkami HT, 2,1 s na 8 wątkach. Na każdej stronie dochodzi jeszcze renderowanie 300 dpi i zapis obrazu.
+
+**Czy 150 dokumentów zmieści się w 45 minutach, także gdy wszystkie są skanami?**
+- **Przy założonych 8,9 s/skan — tak:** 150 × 8,9 s ≈ **22 min**. Tyle wychodzi na 4-rdzeniowym laptopie (8,9–10,6 s/skan; 150 × 10,6 s ≈ 26 min).
+- **Na VM z 2 vCPU, gdy wszystkie 150 dokumentów to skany — nie.** Przy zmierzonych 33,6 s/skan wychodzi 150 × 33,6 s ≈ **84 min**, prawie dwa razy więcej niż limit. Zmieścić się mogłoby tylko wtedy, gdyby rdzenie VM były ok. 2 razy szybsze od rdzeni laptopa z 2016 r. albo skany były krótkie (1 strona, ok. 6–9 s).
+- **Na VM z 2 vCPU przy realnej proporcji — tak, z dużym zapasem.** Przy proporcji jak w danych treningowych (ok. 15% skanów, ok. 21 na 150) wychodzi ok. **12 min**. Limit 45 min wystarcza na ok. **80 skanów** wśród 150 dokumentów (PDF tekstowy to ułamek sekundy).
+
+Faktyczny czas na VM pokaże próba generalna z RUN.md: ostatnia linia wyjścia podaje średni czas skanu.
 
 ### Uruchomienie interfejsu webowego (GUI)
 
 ```bash
 python app.py --serve --port 8000
 ```
-Interfejs dostępny jest pod adresem: `http://localhost:8000` (bez zewnętrznych zależności, działa na Pythonie 3.13+):
+Interfejs dostępny jest pod adresem: `http://localhost:8000` (bez zewnętrznych zależności, Python 3.12 / 3.13+).
+
+**GUI na VM ewaluacyjnej:** port 8000 jest na VM otwarty, więc GUI może tam działać pod `http://<adres-VM>:8000`. Uruchamia się go w Dockerze z `--host 0.0.0.0` (komenda w [RUN.md](RUN.md#gui-na-vm-opcjonalnie-port-8000)); domyślnie GUI nasłuchuje tylko na `127.0.0.1`. Do zgłoszenia wystarczy prezentacja PDF na HackTribe, demo wideo nie jest potrzebne.
+
+Zakładki GUI:
 - **Dokument** — podgląd PDF obok wyniku. Każde pole JSON-a ma **pochodzenie**: metodę (`regex` / `heurystyka` / `LLM` / `null — brak danych` / `spójność sprawy`), numer strony (klik przenosi podgląd PDF na tę stronę) i fragment tekstu źródłowego z podświetloną wartością. Metoda „LLM” to fakt, nie deklaracja: pole różni się od wyniku tego samego dokumentu przetworzonego z wyłączonym LLM-em. Metadane pochodzenia **nie trafiają do JSON-a** — „Pobierz JSON” zwraca wyłącznie model UZP.
 - **Wyjaśnienia dla urzędnika** — przy każdym polu nota „dlaczego taka wartość” (reguła, strona, fragment) albo „dlaczego null” (czego szukano, np. „szukano: 11 cyfr po „PESEL” przy osobie — nie znaleziono”; „mocodawcą jest firma — imię i nazwisko nie dotyczy”).
 - **Nowy typ dokumentu (kreator)** — formularz bez pisania kodu: identyfikator i nazwa typu, słowa kluczowe z wagami (rozpoznawanie), pola JSON-a (ścieżka z kropkami = zagnieżdżenie) z regułą dla każdego pola wybraną z budulców silnika (data/miejscowość z nagłówka, nazwa/NIP/KRS/REGON/PESEL strony, numer postępowania, własny regex, wybór z listy, podpisujący, stała). **Testuj na PDF-ie** pokazuje punktację klasyfikatora (czy PDF zostanie rozpoznany jako nowy typ), wynikowy JSON i pochodzenie każdego pola — bez LLM-a. **Zapisz typ** tworzy `config/custom/<id>.yaml`; typ działa od razu w GUI i w CLI (wczytywany przez `load_config`, nie nadpisuje klas z `document_types.yaml`). **Pobierz YAML** — gotowy wpis do przeglądu/commita. Formularz waliduje dane (zajęte nazwy, wagi, poprawność regexów, kolizje ścieżek) i zwraca błędy po polsku.
@@ -127,21 +162,48 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000` (bez zewnętrznych
 3. **Ekstrakcja deterministyczna (Zero Hallucination):**
    - Pola jednoznaczne wyciągane są w 100% deterministycznie z walidacją formatu:
      - Numery identyfikacyjne: NIP (10 cyfr), KRS (10 cyfr), REGON (9 lub 14 cyfr).
-     - Numery bankowe: IBAN (26 cyfr, normalizacja formatu PL).
+     - Numery rachunków: 26 cyfr, zapis jak w dokumencie bez białych znaków, z prefiksem kraju (`PL…`), jeśli dokument go podaje (UZP 21:17, 23:00).
      - Identyfikatory postępowań: numery referencyjne spraw, ogłoszenia BZP i TED (kanoniczny format `XXXXXX-YYYY`).
      - Kwoty i daty transakcji (eliminacja mylenia daty operacji z datą generowania wyciągu).
      - Konsorcja i reprezentacja: prawidłowe rozdzielanie członków konsorcjum (Lider vs Partner) oraz podpisujących.
-4. **Model LLM (wyłącznie Open Source / dostawca z UE):**
-   - **Jeden model: Ministral 3 3B Instruct (`ministral-3b-2512`)** — open weights na licencji Apache 2.0 (`mistralai/Ministral-3-3B-Instruct-2512`), **3,4 mld parametrów** modelu językowego + **0,4 mld** enkodera obrazu = **3,8 mld parametrów razem** (wg karty modelu na Hugging Face) → kategoria **≤ 8B (20 pkt wg tabeli UZP)**. Model jest przypięty do wersji (`llm.py`, `.env.example`, `docker-compose.yml`); aliasy `*-latest` nie są używane. Wcześniej rozważany `ministral-8b-2410` (8,02 mld) jest wycofany z API Mistral (zapytanie jest po cichu kierowane na `ministral-8b-2512`, ok. 8,8 mld), dlatego z niego zrezygnowano.
-   - Dostawca: **Mistral AI** (API z UE; Polityka Prywatności określa zakres i miejsce przetwarzania danych na terenie UE/EOG). Zgodnie z wytycznymi UZP hosting prywatny/lokalny jest wykluczony, a modele komercyjne/zamknięte (Gemini, Claude) **nie są używane** w runtime.
-   - **Silnik główny jest deterministyczny** (regex + heurystyka + konfiguracja YAML): na 210 dokumentach treningowych oraz na przykładach `przystapienie` wykonano **0 wywołań LLM** (zmierzone licznikiem wywołań API przy włączonym LLM i obecnym kluczu), a F1 = 1,0000.
-   - Kolejność w runtime: 1) reguły deterministyczne; 2) **LLM tylko jako fallback dla pól niejednoznacznych** (poniżej); 3) brak klucza / błąd API → `null` bez zgadywania.
-   - LLM jest wywoływany **wyłącznie jako fallback do pól niejednoznacznych** (np. `czynnosc_powod_id` 1–12 z pierwszego zarzutu, tytuł zamówienia), gdy reguły deterministyczne napotkają brak danych. Odpowiedź jest walidowana: id spoza słownika 1–12, puste napisy i „null” → `null`; tytuł przyjmowany tylko, gdy jego słowa występują w dokumencie.
+     - Nazwa firmy przy JDG: dokładnie jak w dokumencie, także gdy różni się od CEIDG (UZP 21:17). Ekstraktor nie korzysta z rejestrów i nie przepisuje nazw.
+4. **Model LLM (wyłącznie Open Source / dostawca z UE):** jeden model, Ministral 3 3B Instruct 2512, używany tylko jako fallback. Pełna specyfikacja jest w sekcji [Model LLM — pełna specyfikacja](#-model-llm--pełna-specyfikacja) poniżej.
+   - Kolejność w runtime: 1) reguły deterministyczne; 2) **LLM tylko jako fallback dla pól niejednoznacznych** (np. `czynnosc_powod_id` 1–12 z pierwszego zarzutu, tytuł zamówienia, odmienione nazwisko → mianownik); 3) brak klucza / błąd API → `null` bez zgadywania.
+   - Odpowiedź LLM-a jest walidowana: id spoza słownika 1–12, puste napisy i „null” → `null`; tytuł przyjmowany tylko, gdy jego słowa występują w dokumencie.
 5. **Moduł spójności sprawy (`case_consistency.py`):**
    - Zgodnie z zasadą *„Zrozum sprawę. Nie tylko dokument.”* po przetworzeniu kompletu dokumentów sprawy następuje walidacja i uzupełnianie braków krzyżowych (np. weryfikacja NIP odwołującego vs mocodawcy, numeru postępowania w tytule przelewu), a kontrole OK / UWAGA (w tym kwota przelewu vs wpis od odwołania) są pokazywane w GUI i wypisywane w CLI.
    - **Pochodzenie wartości (`provenance.py`)** — dla GUI: metoda, strona i fragment tekstu źródłowego każdego pola (na 210 dokumentach treningowych lokalizacja w tekście dla 99,8% niepustych pól; pozostałe to pola wyliczane, np. `przez-pelnomocnika = 0`, opisane notą).
 6. **Ścisła zgodność ze schematami UZP:**
    - Wygenerowany JSON jest ściśle dopasowany do schematów `odwolanie.json`, `pelnomocnictwo.json`, `przelew.json` (właściwe typy pól, brak cytowań w JSON, brak dodatkowych nieudokumentowanych kluczy).
+
+---
+
+## 🧠 Model LLM — pełna specyfikacja
+
+| Parametr | Wartość |
+|---|---|
+| Liczba modeli | **jeden** model do wszystkich wywołań LLM-a |
+| Model | **Ministral 3 3B Instruct 2512** (`ministral-3b-2512`, przypięty do wersji, bez aliasów `*-latest`) |
+| Parametry | **3,4 mld** (model językowy) + **0,4 mld** (enkoder obrazu) = **3,8 mld razem** |
+| Architektura | **dense** (gęsta), nie MoE — 3,8 mld to pełny rozmiar, bez podziału na parametry „aktywne” |
+| Licencja | **Apache 2.0**, otwarte wagi (`mistralai/Ministral-3-3B-Instruct-2512` na Hugging Face) |
+| Dostawca | **Mistral AI**, serwery w UE (Polityka Prywatności: przetwarzanie w UE/EOG) |
+| Dostęp | **bezpośrednio API Mistral** (`api.mistral.ai`), bez OpenRoutera i innych pośredników, bez hostingu prywatnego |
+
+- **Silnik główny jest deterministyczny** (regex + heurystyka + YAML): na 210 dokumentach treningowych (oraz 16 negatywach i 3 przykładach przystąpienia) wykonano **0 wywołań LLM**. F1 w Dockerze: PDF-y tekstowe 1,0000, łącznie 0,9994 (różnica tylko na skanach, z powodu wersji silnika OCR).
+- **LLM to tylko fallback dla pól niejednoznacznych**, gdy reguły nie dadzą wyniku. Każda odpowiedź jest walidowana, a brak pewności daje `null`.
+- **Tryb `--no-llm` działa bez klucza API** i bez połączenia z internetem. Bez pliku `.env` aplikacja przechodzi w ten tryb sama.
+- **Tesseract to OCR, nie model LLM**: lokalny, open source (Apache 2.0) silnik zamiany obrazu skanu na tekst. Nie interpretuje treści.
+- Modele komercyjne/zamknięte (Gemini, Claude) nie są używane w runtime. Wcześniej rozważany `ministral-8b-2410` jest wycofany z API (po cichu podmieniany na model ok. 8,8 mld), dlatego z niego zrezygnowano. Szczegóły: [TECHNICAL.md](TECHNICAL.md#model-llm--pełna-specyfikacja).
+
+## 🧩 Elastyczność — nowe typy dokumentów bez zmiany kodu
+
+Konfiguracja YAML (`config/document_types.yaml`, `config/custom/*.yaml`) obejmuje: **(a)** reguły rozpoznawania (słowa kluczowe z wagami, sygnały negatywne, próg), **(b)** walidację (dozwolona struktura JSON-a, format pól z typu reguły, słowniki), **(c)** mapowanie pól (drzewo `extract`: ścieżka JSON → reguła i etykiety) i **(d)** nowe typy dokumentów. Wszystko działa bez zmiany kodu.
+
+- **Dowód:** 4. typ (zgłoszenie przystąpienia, art. 524 Pzp) jest dodany wyłącznie sekcją YAML i daje F1 = 1,0000 na `examples/przystapienie/`.
+- **Kreator w GUI** (zakładka „Nowy typ dokumentu”) buduje typ z formularza, testuje go na PDF-ie i zapisuje do `config/custom/<id>.yaml`.
+
+Szczegóły: [TECHNICAL.md](TECHNICAL.md#elastyczność--konfiguracja-bez-zmiany-kodu).
 
 ---
 
@@ -165,11 +227,17 @@ Interfejs dostępny jest pod adresem: `http://localhost:8000` (bez zewnętrznych
 │   └── przystapienie/          # Syntetyczne przykłady PDF + JSON dla typu przystapienie
 ├── static/
 │   └── index.html              # Interfejs graficzny web GUI
+├── input/                      # Dokumenty wejściowe (PDF, także w podfolderach spraw)
+├── output/                     # Wynikowe JSON-y (ta sama nazwa i struktura co w input/)
 ├── EVAL.md                     # Raport z wynikami ewaluacji F1
-├── requirements.txt            # Zależności open-source (Python 3.13+)
-├── Dockerfile                  # Konteneryzacja środowiska z Tesseract OCR
-├── docker-compose.yml          # Konfiguracja uruchomienia kontenerowego
-├── .env.example                # Przykładowy plik zmiennych środowiskowych
+├── RUN.md                      # Uruchomienie na VM ewaluacyjnej: jedna komenda, przygotowanie, GUI
+├── run.sh                      # Jedna komenda (Docker): input/ -> output/
+├── start.bat                   # Uruchomienie na Windows (Python)
+├── requirements.txt            # Zależności open-source (Python 3.13+, sprawdzone też na 3.12)
+├── Dockerfile                  # Obraz: Python 3.13 + Tesseract OCR (pol)
+├── .dockerignore               # .env, dane UZP i wyniki nigdy nie trafiają do obrazu
+├── docker-compose.yml          # Alternatywa: batch i GUI przez docker compose
+├── .env.example                # Przykładowy plik zmiennych środowiskowych (prawdziwy .env tylko na serwerze)
 └── README.md                   # Dokumentacja projektu
 ```
 
@@ -186,4 +254,10 @@ python app.py hacknation-uzp-repo/dane output
 # 2. Uruchomienie skryptu ewaluacyjnego
 python evaluate.py hacknation-uzp-repo/dane output
 ```
-Raport zostanie wyświetlony w konsoli oraz zaktualizowany w pliku `EVAL.md`.
+Raport zostanie wyświetlony w konsoli oraz zaktualizowany w pliku `EVAL.md`. Jeśli obok predykcji leży raport wsadowy (`output_raport.json`), `evaluate.py` dzieli F1 na PDF-y tekstowe i skany i podaje wersję silnika OCR.
+
+`EVAL.md` w repozytorium pochodzi z przebiegu w obrazie Docker, czyli w środowisku jury:
+```bash
+docker run --rm -v "$PWD":/app odwolania2json python app.py hacknation-uzp-repo/dane output_docker
+python evaluate.py hacknation-uzp-repo/dane output_docker
+```

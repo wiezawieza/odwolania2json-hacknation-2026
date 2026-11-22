@@ -1,0 +1,18 @@
+# Nigdy do obrazu: klucz API, dane treningowe UZP, wyniki, cache, środowiska lokalne.
+.env
+.env.*
+!.env.example
+.git
+.venv
+venv
+.claude
+.cache_ocr
+__pycache__
+*.py[cod]
+hacknation-uzp-repo
+input
+input_*
+output
+output_*
+*_raport.json
+*_raport.csv

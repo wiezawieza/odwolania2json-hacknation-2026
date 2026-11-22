@@ -3,7 +3,7 @@
 Użycie:
   python app.py input output            # batch: PDF-e z input/ -> JSON-e do output/
   python app.py input output --no-llm   # tylko regexy + heurystyka (zero wywołań LLM-a)
-  python app.py --serve [--port 8000]   # GUI: dokument z pochodzeniem pól + widok sprawy
+  python app.py --serve [--port 8000] [--host 0.0.0.0]   # GUI: dokument z pochodzeniem pól + widok sprawy
 
 Pipeline (tryb wsadowy):
   * raport <output>_raport.json + .csv (lub --report PLIK): typ, status, czas każdego dokumentu,
@@ -12,7 +12,7 @@ Pipeline (tryb wsadowy):
   * exit code: 0 = wszystko OK (dokument obcy -> {} to też OK), 1 = co najmniej jeden
     błąd przetwarzania (ERR) lub walidacji (INVALID), 2 = brak wejścia.
 
-Wymagania: Python 3.13+, pip install -r requirements.txt
+Wymagania: Python 3.13+ (sprawdzone też na 3.12), pip install -r requirements.txt; na VM: RUN.md (Docker)
 Klucz API (open-source LLM po API z dostawcą z UE):
   LLM_API_KEY lub MISTRAL_API_KEY, opcjonalnie LLM_API_BASE / LLM_MODEL.
 Bez klucza API aplikacja działa w trybie deterministycznym (regex + heurystyka).
@@ -31,7 +31,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from case_consistency import case_checks, case_summary, check_case  # noqa: E402
-from extractor import extract_document, load_config  # noqa: E402
+from extractor import extract_document, load_config, ocr_engine  # noqa: E402
 from validation import validate_result  # noqa: E402
 
 MAX_UPLOAD = 60 * 1024 * 1024  # łącznie na jedno żądanie GUI
@@ -78,6 +78,7 @@ def write_report(rows, report_path, total_s):
     done = [r for r in rows if r["status"] in ("OK", "ODRZUCONO", "INVALID")]
     summary = {
         "dokumentow": len(rows), "statusy": by,
+        "silnik_ocr": ocr_engine(),  # wynik skanów zależy od wersji Tesseracta (patrz EVAL.md)
         "czas_lacznie_s": round(total_s, 2),
         "czas_sredni_s": _avg([r["czas_s"] for r in rows]),
         "czas_sredni_pdf_tekstowy_s": _avg([r["czas_s"] for r in done if not r["ocr"]]),
@@ -190,7 +191,7 @@ def process_folder(input_dir, output_dir, use_llm=True, report_path=None):
     print(f"Gotowe: OK={stats['ok']} ODRZUCONO={stats.get('unknown', 0)} ERR/INVALID={stats['err']} · "
           f"czas {summary['czas_lacznie_s']} s, średnio {summary['czas_sredni_s']} s/dok. "
           f"(PDF tekstowy {summary['czas_sredni_pdf_tekstowy_s']} s, skan OCR {summary['czas_sredni_skan_ocr_s']} s)")
-    print(f"Raport: {report_path} (+ .csv) · exit code {stats['exit_code']}")
+    print(f"Raport: {report_path} (+ .csv) · OCR: {summary['silnik_ocr'] or 'brak Tesseracta'} · exit code {stats['exit_code']}")
     return stats
 
 
@@ -247,7 +248,7 @@ def _public_info(info):
     return {k: info.get(k) for k in ("ocr", "pages", "chars", "needs_ocr", "error") if info.get(k) is not None}
 
 
-def serve(port=8000, use_llm=True):
+def serve(port=8000, use_llm=True, host="127.0.0.1"):
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     from provenance import build_provenance, flatten
@@ -401,8 +402,10 @@ def serve(port=8000, use_llm=True):
         def log_message(self, *args):
             pass
 
-    print(f"GUI: http://127.0.0.1:{port}  (Ctrl+C, aby zatrzymać)")
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    extra = " — nasłuch na wszystkich interfejsach (np. VM z otwartym portem)" if host in ("0.0.0.0", "") else ""
+    print(f"GUI: http://{shown}:{port}{extra}  (Ctrl+C, aby zatrzymać)")
+    HTTPServer((host, port), Handler).serve_forever()
 
 
 def main():
@@ -411,6 +414,8 @@ def main():
     ap.add_argument("output", nargs="?", default="output")
     ap.add_argument("--serve", action="store_true", help="uruchom GUI")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="adres nasłuchu GUI (0.0.0.0 = dostęp z zewnątrz, np. VM / Docker)")
     ap.add_argument("--no-llm", action="store_true", help="tylko regexy, bez LLM-a")
     ap.add_argument("--report", default=None, help="ścieżka raportu wsadowego JSON (domyślnie <output>_raport.json)")
     args = ap.parse_args()
@@ -418,7 +423,7 @@ def main():
         # Wyłącza KAŻDE wywołanie LLM-a, także normalizację nazwisk do mianownika.
         os.environ["LLM_OFF"] = "1"
     if args.serve:
-        serve(args.port, use_llm=not args.no_llm)
+        serve(args.port, use_llm=not args.no_llm, host=args.host)
     elif os.path.isfile(args.input):
         config = load_config()
         out_path = args.output

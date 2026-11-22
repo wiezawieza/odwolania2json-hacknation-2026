@@ -1,11 +1,18 @@
+# Alternatywa dla run.sh (wymaga wtyczki docker compose). Katalog aplikacji montowany jako /app:
+# input/, output/ i .env (klucz API — tylko na serwerze, nigdy w repo) są czytane z hosta.
+#   docker compose run --rm odwolania2json      # batch: input/ -> output/
+#   docker compose up -d gui                    # GUI na porcie 8000
 services:
   odwolania2json:
     build: .
+    image: odwolania2json
     volumes:
-      - ./input:/app/input
-      - ./output:/app/output
-    environment:
-      - LLM_API_KEY=${LLM_API_KEY:-}
-      - LLM_API_BASE=${LLM_API_BASE:-https://api.mistral.ai/v1}
-      - LLM_MODEL=${LLM_MODEL:-ministral-3b-2512}
+      - ./:/app
     command: ["python", "app.py", "input", "output"]
+  gui:
+    image: odwolania2json
+    volumes:
+      - ./:/app
+    ports:
+      - "8000:8000"
+    command: ["python", "app.py", "--serve", "--host", "0.0.0.0", "--port", "8000"]
