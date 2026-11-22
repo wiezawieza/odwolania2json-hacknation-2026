@@ -55,9 +55,13 @@ Jeśli użytkownik nie należy do grupy `docker`, poprzedź komendę `sudo`.
 ## Przygotowanie VM (zespół, przed odcięciem dostępu o 11:00)
 
 ```bash
-# 1. Kod do /opt/solution (input/ i output/ są w repozytorium jako puste foldery)
+# 1. Kod do /opt/solution (input/ i output/ są w repozytorium jako puste foldery).
+#    Repozytorium jest prywatne: git clone zapyta o login i token GitHub (token tylko do odczytu).
 git clone --depth 1 https://github.com/wiezawieza/odwolania2json-hacknation-2026.git /tmp/odw
 sudo mkdir -p /opt/solution && sudo cp -a /tmp/odw/. /opt/solution/
+#    Albo bez GitHuba na VM: na laptopie `git archive --format=tar.gz -o odwolania2json.tar.gz HEAD`
+#    (paczka bez .env i danych), `scp odwolania2json.tar.gz <użytkownik>@<VM>:/tmp/`, a na VM:
+#    sudo mkdir -p /opt/solution && sudo tar -xzf /tmp/odwolania2json.tar.gz -C /opt/solution
 
 # 2. Klucz API tylko na serwerze (podmień <KLUCZ>)
 echo 'LLM_API_KEY=<KLUCZ>' | sudo tee /opt/solution/.env >/dev/null && sudo chmod 600 /opt/solution/.env
