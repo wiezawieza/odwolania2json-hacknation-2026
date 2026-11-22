@@ -23,6 +23,8 @@ Jeśli użytkownik nie należy do grupy `docker`, poprzedź komendę `sudo`.
 ### Co robi
 
 - Przetwarza każdy PDF z `/opt/solution/input`, także w podfolderach spraw (`input/sprawa1/odwolanie.pdf`).
+- Pracuje równolegle: 2 procesy robocze (tyle, ile vCPU ma VM), każdy dokument niezależnie. JSON-y są bajt w bajt
+  takie same jak w jednym procesie (`bash /opt/solution/run.sh --workers 1`), tylko szybciej.
 - Dla każdego pliku `X.pdf` zapisuje `X.json` w tym samym podfolderze `output/`. Nazwa jest identyczna z nazwą
   pliku wejściowego, zmienia się tylko końcówka (`potwierdzenie_przelewu.pdf` → `potwierdzenie_przelewu.json`).
 - Dokument spoza obsługiwanych typów (odwołanie, pełnomocnictwo, potwierdzenie przelewu oraz zgłoszenie przystąpienia
@@ -45,23 +47,20 @@ Jeśli użytkownik nie należy do grupy `docker`, poprzedź komendę `sudo`.
 
 ### Czas i wynik w tym środowisku
 
-- PDF tekstowy: ułamek sekundy. Skan (OCR): ok. 11 s na 8 wątkach. Na 2 rdzeniach, jak na VM, zmierzyliśmy ok. 34 s
-  na skan (ok. 14 s na stronę). 150 dokumentów przy proporcji skanów jak w danych treningowych to ok. 12 min. Limit 45 min
-  wystarcza na ok. 80 skanów; 150 samych skanów na 2 vCPU go nie zmieści (ok. 84 min). Szczegóły:
-  [README.md](README.md#zmierzony-czas-przetwarzania).
+- PDF tekstowy: ok. 0,01 s. Skany na 2 rdzeniach (ten obraz przypięty do 2 rdzeni laptopa i7-6700HQ z 2016 r., OCR
+  od zera): 12 skanów (28 stron) w 85 s, czyli 7,1 s na skan, więc **150 samych skanów ≈ 18 min** przy limicie 60 min.
+  Gdyby 2 vCPU VM miały moc tylko jednego rdzenia: ok. 33 min. Przed zmianą (1 proces, Tesseract z OpenMP) było to
+  ok. 78 min. Szczegóły: [README.md](README.md#zmierzony-czas-przetwarzania).
 - F1 na danych treningowych w tym obrazie (Tesseract 5.5.0): PDF-y tekstowe 1,0000, skany 0,9952, łącznie 0,9994
-  ([EVAL.md](EVAL.md)).
+  ([EVAL.md](EVAL.md)), tak samo przy 1 i przy 2 workerach.
 
 ## Przygotowanie VM (zespół, przed odcięciem dostępu o 11:00)
 
 ```bash
-# 1. Kod do /opt/solution (input/ i output/ są w repozytorium jako puste foldery).
-#    Repozytorium jest prywatne: git clone zapyta o login i token GitHub (token tylko do odczytu).
+# 1. Kod do /opt/solution: repozytorium jest publiczne, zwykły git clone bez logowania
+#    (input/ i output/ są w repozytorium jako puste foldery).
 git clone --depth 1 https://github.com/wiezawieza/odwolania2json-hacknation-2026.git /tmp/odw
 sudo mkdir -p /opt/solution && sudo cp -a /tmp/odw/. /opt/solution/
-#    Albo bez GitHuba na VM: na laptopie `git archive --format=tar.gz -o odwolania2json.tar.gz HEAD`
-#    (paczka bez .env i danych), `scp odwolania2json.tar.gz <użytkownik>@<VM>:/tmp/`, a na VM:
-#    sudo mkdir -p /opt/solution && sudo tar -xzf /tmp/odwolania2json.tar.gz -C /opt/solution
 
 # 2. Klucz API tylko na serwerze (podmień <KLUCZ>)
 echo 'LLM_API_KEY=<KLUCZ>' | sudo tee /opt/solution/.env >/dev/null && sudo chmod 600 /opt/solution/.env
@@ -76,7 +75,8 @@ sudo bash /opt/solution/run.sh; ls -R /opt/solution/output | head -20
 sudo rm -rf /opt/solution/input/* /opt/solution/output/* /opt/solution/output_raport.*
 ```
 
-Ostatnia linia wyjścia próby podaje średni czas skanu z OCR zmierzony na samej VM.
+Linia „Gotowe” z próby podaje czas zegarowy na samej VM. Ten czas podzielony przez 30 i pomnożony przez 150 to prognoza
+dla 150 samych skanów (sprawa tekstowa trwa ułamek sekundy).
 
 ## GUI na VM (opcjonalnie, port 8000)
 

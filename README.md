@@ -109,11 +109,43 @@ Tryb bez LLM (czysty regex + heurystyka, zero wywołań API — także bez norma
 python app.py input output --no-llm
 ```
 
+Batch działa równolegle: domyślnie 2 procesy robocze (tyle, ile vCPU ma VM ewaluacyjna), każdy dokument niezależnie. Wynik jest bajt w bajt taki sam jak w jednym procesie, który można wymusić (albo podać więcej workerów na mocniejszej maszynie):
+```bash
+python app.py input output --workers 1
+```
+
 **Integracja z pipeline'em:** każdy JSON jest walidowany przed zapisem (`validation.py`), a batch zapisuje raport `output_raport.json` + `output_raport.csv` (typ, status `OK` / `ODRZUCONO` / `INVALID` / `ERR`, czas każdego dokumentu, OCR, strony, błędy; ścieżka: `--report`). Exit code: `0` — wszystko przetworzone, `1` — co najmniej jeden błąd przetwarzania lub walidacji, `2` — brak wejścia. Szczegóły: [TECHNICAL.md](TECHNICAL.md).
 
 ### Zmierzony czas przetwarzania
 
-**210 dokumentów treningowych (180 PDF-ów tekstowych + 30 skanów) — łącznie 320 s (5 min 20 s).** Cały katalog `dane` razem z 16 negatywami (226 PDF-ów) — 377 s. Pomiar z 22.11.2026: cache OCR wyczyszczony (każdy skan OCR-owany od zera), tryb domyślny, laptop Intel Core i7-6700HQ (4 rdzenie / 8 wątków, 2016), 16 GB RAM, Windows, Tesseract 5.4 `pol`. W tym przebiegu F1 = 1,0000, negatywy 16/16, 0 wywołań LLM. Wynik pochodzi z raportu wsadowego (`czas_s` każdego dokumentu):
+**Na 2 rdzeniach, tak jak na VM, 150 samych skanów zajmuje ok. 18 min przy limicie 60 min. Przed zmianą było to ok. 78 min.** Pomogły dwie zmiany w trybie wsadowym. Żadna nie zmienia wyniku:
+
+1. **Tesseract z jednym wątkiem w każdym workerze.** Tesseract 5.5.0 z Debiana (obraz Docker) jest zbudowany z OpenMP i domyślnie dzieli każdą stronę na wątki. Na 2 rdzeniach to nie przyspiesza, tylko spowalnia. Ta sama strona odwołania (2550×3300 px, sam Tesseract) trwa 16,5 s z OpenMP i 4,7 s z jednym wątkiem (`OMP_THREAD_LIMIT=1`), a tekst wychodzi identyczny co do znaku. Worker ustawia `OMP_THREAD_LIMIT=1`, chyba że zmienna jest już ustawiona. Tesseract 5.4.0 na Windows (UB Mannheim) jest zbudowany bez OpenMP, więc tam ta zmiana nic nie robi.
+2. **Równoległość.** 2 procesy robocze (`--workers N`, domyślnie min(2, liczba rdzeni)), każdy dokument osobno, największe pliki najpierw. Zapis JSON-ów, walidację, raport i spójność sprawy robi proces główny, w tej samej kolejności plików co przy jednym procesie.
+
+**Pomiar na 2 rdzeniach.** Obraz Docker z RUN.md był przypięty do 2 fizycznych rdzeni laptopa Intel Core i7-6700HQ z 2016 r. (`--cpuset-cpus=0,2` w WSL2). W tym czasie nic innego nie działało, a cache OCR był czyszczony przed każdym przebiegiem. Próbka: 12 skanów, po 4 odwołania, pełnomocnictwa i potwierdzenia przelewu (numery 0002, 0004, 0006, 0008), razem 28 stron. Czas pochodzi z raportu wsadowego (`czas_lacznie_s`), bez ok. 1 s startu kontenera:
+
+| Tryb (12 skanów, 28 stron) | Czas | Na skan | Na stronę | 150 samych skanów |
+|---|:---:|:---:|:---:|:---:|
+| 1 proces, Tesseract z OpenMP (przed zmianą) | 375,4 s | 31,3 s | 13,4 s | 78 min |
+| 1 proces, Tesseract z 1 wątkiem | 159,4 s | 13,3 s | 5,7 s | 33 min |
+| **2 workery, Tesseract z 1 wątkiem (domyślnie)** | **84,9 s** | **7,1 s** | **3,0 s** | **17,7 min** |
+
+Powtórzony przebieg z 2 workerami trwał 85,1 s. Wcześniejszy pomiar sprzed zmiany (403 s na 12 skanach, 33,6 s na skan) zgadza się z pierwszym wierszem tabeli. Jeden wątek Tesseracta przyspiesza przetwarzanie 2,4 razy, a 2 workery dokładają kolejne 1,9 razy. Cały katalog `dane` (226 PDF-ów, w tym 33 przez OCR, razem 79 stron) w trybie domyślnym na tych samych 2 rdzeniach: 218 s.
+
+**Czy 150 dokumentów zmieści się w 60 minutach, także gdy wszystkie są skanami?**
+- **Na 2 rdzeniach — tak:** 150 × 7,1 s ≈ **18 min**, ponad 3 razy poniżej limitu.
+- **Gdyby 2 vCPU VM miały moc tylko jednego rdzenia — też tak.** Tak liczy jeden proces z jednym wątkiem: 150 × 13,3 s ≈ **33 min**. Taki przypadek zachodzi, gdy oba vCPU to wątki HT jednego rdzenia fizycznego. Wprost go nie zmierzyliśmy. W WSL2 przypięcie do pary wątków jednego rdzenia według `lscpu` (`--cpuset-cpus=0,1`) dało ten sam czas co dwa rdzenie (82,1 s), więc WSL2 nie odwzorowuje tu prawdziwej topologii.
+- **Typowy zestaw (PDF-y tekstowe i skany) — z dużym zapasem.** PDF tekstowy to ok. 0,01 s. Przy proporcji jak w danych treningowych (226 PDF-ów w 218 s) 150 dokumentów zajmuje ok. **2,5 min**.
+- Wszystkie liczby pochodzą z laptopa z 2016 r. Rdzenie VM mogą być szybsze albo wolniejsze. Zapas wynosi ponad 3 razy przy 2 rdzeniach i ok. 1,8 razy przy mocy jednego rdzenia.
+
+**Wynik nie zależy od liczby workerów.** Sprawdziliśmy to bajt po bajcie, z OCR od zera:
+- Docker / Tesseract 5.5.0 (2 workery, 2 rdzenie): 226 z 226 JSON-ów (210 z wzorcem i 16 negatywów) jest identycznych z przebiegiem jednoprocesowym sprzed zmiany. `evaluate.py` daje bez zmian F1 0,9994 (PDF-y tekstowe 1,0000, skany 0,9952) i negatywy 16/16. Wyniki 12 skanów z każdego z 5 przebiegów pomiarowych (1 proces i 2 workery) też są identyczne. Przystąpienie: 3 z 3 identyczne z `--workers 1`, F1 1,0000.
+- Windows / Tesseract 5.4.0 (2 workery, procesy startowane przez `spawn`): 226 z 226 identycznych z wynikami sprzed zmiany, F1 1,0000, negatywy 16/16, przystąpienie 3 z 3 (F1 1,0000).
+
+Faktyczny czas na VM pokaże próba generalna z RUN.md (30 skanów i jedna sprawa tekstowa). Czas z linii „Gotowe” podzielony przez 30 i pomnożony przez 150 to prognoza dla 150 samych skanów.
+
+**Laptop, Windows, 8 wątków.** Cały katalog `dane` (226 PDF-ów, OCR od zera) zajmuje 180 s z 2 workerami, a w jednym procesie zajmował 377 s. Poniżej pomiar jednoprocesowy z 22.11.2026 dla 210 dokumentów treningowych (180 PDF-ów tekstowych i 30 skanów): łącznie 320 s. Warunki: cache OCR wyczyszczony (każdy skan OCR-owany od zera), laptop Intel Core i7-6700HQ (4 rdzenie / 8 wątków, 2016), 16 GB RAM, Windows, Tesseract 5.4 `pol`. W tym przebiegu F1 = 1,0000, negatywy 16/16, 0 wywołań LLM. Dane pochodzą z raportu wsadowego (`czas_s` każdego dokumentu):
 
 | Rodzaj dokumentu (210 z wzorcem UZP) | Liczba | Łącznie | Średnio | Mediana | 90. percentyl | Maks. |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -122,15 +154,6 @@ python app.py input output --no-llm
 | **Razem** | **210** | **320,0 s** | 1,5 s | 0,012 s | 2,4 s | 36,9 s |
 
 Czas skanu zależy od liczby stron: ok. 4,4 s na stronę, średnio 2,4 strony na skan. Wcześniejszy przebieg na tym samym laptopie dał 8,9 s na skan (rozrzut między przebiegami). Ponowne przetworzenie tego samego skanu korzysta z cache OCR (`.cache_ocr/`, klucz: treść pliku) i trwa ok. 0,03 s.
-
-**Pomiar na 2 rdzeniach (jak VM: 2 vCPU).** Obraz Docker z RUN.md przypięty do 2 fizycznych rdzeni tego samego laptopa (`--cpuset-cpus`), nic innego nie działało, OCR od zera. 12 skanów (po 4 odwołania, pełnomocnictwa i potwierdzenia, 28 stron) trwało 403 s, czyli **33,6 s na skan i 14,4 s na stronę**. To ok. 3 razy wolniej niż na 8 wątkach, bo Tesseract dzieli pracę na wszystkie dostępne rdzenie. Gęsta strona odwołania zajmuje ok. 17 s, krótkie potwierdzenie przelewu ok. 6 s. Sam OCR tych samych 12 stron: 5,7 s/stronę na 2 rdzeniach, 6,4 s na 1 rdzeniu z 2 wątkami HT, 2,1 s na 8 wątkach. Na każdej stronie dochodzi jeszcze renderowanie 300 dpi i zapis obrazu.
-
-**Czy 150 dokumentów zmieści się w 45 minutach, także gdy wszystkie są skanami?**
-- **Przy założonych 8,9 s/skan — tak:** 150 × 8,9 s ≈ **22 min**. Tyle wychodzi na 4-rdzeniowym laptopie (8,9–10,6 s/skan; 150 × 10,6 s ≈ 26 min).
-- **Na VM z 2 vCPU, gdy wszystkie 150 dokumentów to skany — nie.** Przy zmierzonych 33,6 s/skan wychodzi 150 × 33,6 s ≈ **84 min**, prawie dwa razy więcej niż limit. Zmieścić się mogłoby tylko wtedy, gdyby rdzenie VM były ok. 2 razy szybsze od rdzeni laptopa z 2016 r. albo skany były krótkie (1 strona, ok. 6–9 s).
-- **Na VM z 2 vCPU przy realnej proporcji — tak, z dużym zapasem.** Przy proporcji jak w danych treningowych (ok. 15% skanów, ok. 21 na 150) wychodzi ok. **12 min**. Limit 45 min wystarcza na ok. **80 skanów** wśród 150 dokumentów (PDF tekstowy to ułamek sekundy).
-
-Faktyczny czas na VM pokaże próba generalna z RUN.md: ostatnia linia wyjścia podaje średni czas skanu.
 
 ### Uruchomienie interfejsu webowego (GUI)
 

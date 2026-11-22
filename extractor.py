@@ -105,11 +105,17 @@ def _ocr_pages(pdf_path, pages):
 
     def _store(path, txt):
         if path and not os.path.isfile(path):
+            tmp = f"{path}.{os.getpid()}.tmp"
             try:
-                with open(path, "w", encoding="utf-8") as cf:
+                with open(tmp, "w", encoding="utf-8") as cf:
                     cf.write(txt)
+                # Atomowo: równoległy worker z tym samym skanem nigdy nie przeczyta niedopisanego pliku.
+                os.replace(tmp, path)
             except Exception:
-                pass
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
 
     for i, page in enumerate(doc):
         if len((pages[i] if i < len(pages) else "").strip()) >= 200:

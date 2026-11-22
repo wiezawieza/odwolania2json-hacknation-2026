@@ -117,7 +117,17 @@ tekstowe i skany.
   Na 439 plikach (wyniki 210 + 16 negatywów, ground truth UZP, przykłady przystąpienia) — 0 fałszywych alarmów.
 - **Raport wsadowy**: `<output>_raport.json` (dla automatu) i `<output>_raport.csv` (Excel, `;`, UTF-8 z BOM),
   ścieżkę zmienia `--report`. Dla każdego pliku: wynik, typ, status (`OK` / `ODRZUCONO` / `INVALID` / `ERR`),
-  czas w sekundach, OCR, liczba stron, błędy; w podsumowaniu średni czas PDF-a tekstowego i skanu z OCR.
+  czas w sekundach, OCR, liczba stron, błędy; w podsumowaniu liczba workerów, czas zegarowy całości oraz średni czas
+  PDF-a tekstowego i skanu z OCR (czas dokumentu mierzy worker, który go przetwarzał).
+- **Równoległość**: `--workers N` procesów roboczych (domyślnie min(2, liczba rdzeni dostępnych dla procesu); `1` = jeden
+  proces bez puli). Każdy dokument jest ekstrahowany niezależnie, największe pliki idą pierwsze. Proces główny zapisuje
+  JSON-y, waliduje je, pisze raport i robi spójność sprawy w kolejności plików jak przy `--workers 1` (pierwszy dokument
+  danego typu w sprawie wygrywa), więc wynik nie zależy od liczby workerów ani od kolejności, w jakiej skończą.
+  Worker uruchamia Tesseracta z `OMP_THREAD_LIMIT=1`: Tesseract 5.5.0 z Debiana jest zbudowany z OpenMP i na 2 rdzeniach
+  liczył tę samą stronę 16,5 s zamiast 4,7 s, przy identycznym tekście (zmienna ustawiona ręcznie ma pierwszeństwo).
+  Gdy proces roboczy padnie (segfault biblioteki PDF, brak pamięci), pliki, które były w nim w toku, idą jeszcze raz,
+  każdy we własnym procesie. Plik, który znów go zabija, dostaje `{}` i status `ERR`, reszta batcha przechodzi normalnie.
+  Zapis cache OCR jest atomowy (plik tymczasowy + `os.replace`), bo dwa workery mogą jednocześnie OCR-ować ten sam skan.
 - **Exit code**: `0` — wszystkie pliki przetworzone (dokument obcy → `{}` to poprawny wynik), `1` — co najmniej jeden
   `ERR` (wyjątek, plik nie-PDF, brak tekstu, skan bez dostępnego OCR) lub `INVALID`, `2` — brak pliku/folderu wejściowego.
   Jeden zły plik nie zatrzymuje batcha — każdy PDF ma swój JSON w `output`.
